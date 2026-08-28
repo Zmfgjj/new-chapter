@@ -1,531 +1,296 @@
 import { useAuth } from '../hooks/useAuth'
-import { useNavigate } from 'react-router-dom'
-import { useState, useEffect } from 'react'
-import { Download, ReceiptText, Search, Filter, Calendar, CalendarDays, Receipt, Target, Edit3, CheckCircle2, Trash2, Printer } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react'
+import { ChevronLeft, ChevronRight, Download, Store, Calendar, Info, RefreshCw } from 'lucide-react'
 import api from '../api/auth'
-import { cetakStruk, cetakStrukThermal } from '../utils/printStruk'
 import * as XLSX from 'xlsx-js-style'
 import MobileLayout from '../components/MobileLayout'
 import { useAlert } from '../context/AlertContext'
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, PieChart, Pie, Cell } from 'recharts'
 import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
-// Helper untuk mendapatkan tanggal lokal (WIB/sesuai zona waktu HP/PC) dalam format YYYY-MM-DD
-// agar tidak ada bug mundur 1 hari jika diakses dari jam 00:00 - 07:00 pagi akibat zona waktu UTC.
+import React from 'react'
+
+/* ─── Helpers ─────────────────────────────────────────────────────────────── */
 const getLocalDateString = () => {
-  const d = new Date();
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-  return d.toISOString().split('T')[0];
+  const d = new Date()
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+  return d.toISOString().split('T')[0]
+}
+const fRp = (n) => 'Rp ' + Number(n || 0).toLocaleString('id-ID')
+const addDays = (dateStr, n) => {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setDate(d.getDate() + n)
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+  return local.toISOString().split('T')[0]
+}
+const formatTanggal = (dateStr) => {
+  if (!dateStr) return ''
+  return new Date(dateStr + 'T00:00:00').toLocaleDateString('id-ID', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  })
 }
 
-export default function Laporan() {
-  const { user, isInvestor, canEdit: userCanEdit } = useAuth()
-  const { showAlert } = useAlert()
-  const navigate = useNavigate()
-  const [tab, setTab] = useState('harian')
-  const [loading, setLoading] = useState(false)
-  
-  // KPI Target Karyawan
-  const [kpiTarget, setKpiTarget] = useState(50000000)
-  const [showEditTarget, setShowEditTarget] = useState(false)
-  const [tempTarget, setTempTarget] = useState(50000000)
+/* ─── Demo fallback data ───────────────────────────────────────────────────── */
+const buildDemoData = (tanggal) => {
+  const seed = new Date(tanggal + 'T00:00:00').getDate()
+  const v = 0.88 + (seed % 22) * 0.01
+  const grossSales     = Math.round(19500000 * v)
+  const discounts      = Math.round(925000 * v)
+  const refunds        = Math.round(185000 * v)
+  const netSales       = grossSales - discounts - refunds
+  const gratuity       = Math.round(netSales * 0.05)
+  const tax            = Math.round(netSales * 0.11)
+  const rounding       = seed % 2 === 0 ? -250 : 250
+  const totalCollected = netSales + gratuity + tax + rounding
 
-  useEffect(() => {
-    const fetchTarget = async () => {
-      try {
-        const res = await api.get('/settings/target-kpi')
-        setKpiTarget(res.data.target)
-        setTempTarget(res.data.target)
-      } catch (err) {
-        console.error('Failed to fetch KPI target', err)
-      }
+  const menuDetail = [
+    { nama: 'Nasi Goreng Spesial',  sku: 'FD-001', kategori: 'Makanan',     harga_jual: 45000,  total_terjual: Math.round(64*v),  total_pendapatan: Math.round(2880000*v)  },
+    { nama: 'Ayam Geprek Crispy',   sku: 'FD-002', kategori: 'Makanan',     harga_jual: 42000,  total_terjual: Math.round(55*v),  total_pendapatan: Math.round(2310000*v)  },
+    { nama: 'Mie Goreng Seafood',   sku: 'FD-003', kategori: 'Makanan',     harga_jual: 38000,  total_terjual: Math.round(44*v),  total_pendapatan: Math.round(1672000*v)  },
+    { nama: 'Sate Ayam (10 tusuk)', sku: 'FD-004', kategori: 'Makanan',     harga_jual: 35000,  total_terjual: Math.round(28*v),  total_pendapatan: Math.round(980000*v)   },
+    { nama: 'Es Kopi Susu',         sku: 'DK-001', kategori: 'Minuman',     harga_jual: 22000,  total_terjual: Math.round(90*v),  total_pendapatan: Math.round(1980000*v)  },
+    { nama: 'Teh Tarik',            sku: 'DK-002', kategori: 'Minuman',     harga_jual: 15000,  total_terjual: Math.round(64*v),  total_pendapatan: Math.round(960000*v)   },
+    { nama: 'Jus Alpukat',          sku: 'DK-003', kategori: 'Minuman',     harga_jual: 25000,  total_terjual: Math.round(48*v),  total_pendapatan: Math.round(1200000*v)  },
+    { nama: 'Air Mineral',          sku: 'DK-004', kategori: 'Minuman',     harga_jual: 8000,   total_terjual: Math.round(96*v),  total_pendapatan: Math.round(768000*v)   },
+    { nama: 'Tote Bag NC',          sku: 'MC-001', kategori: 'Merchandise', harga_jual: 85000,  total_terjual: Math.round(18*v),  total_pendapatan: Math.round(1530000*v)  },
+    { nama: 'Tumbler NC 500ml',     sku: 'MC-002', kategori: 'Merchandise', harga_jual: 185000, total_terjual: Math.round(13*v),  total_pendapatan: Math.round(2405000*v)  },
+  ]
+  const metodePembayaran = [
+    { metode: 'BCA QR',    grup: 'Digital', jumlah_transaksi: Math.round(42*v), total: Math.round(7350000*v) },
+    { metode: 'GoPay',     grup: 'Digital', jumlah_transaksi: Math.round(29*v), total: Math.round(4640000*v) },
+    { metode: 'OVO',       grup: 'Digital', jumlah_transaksi: Math.round(18*v), total: Math.round(2970000*v) },
+    { metode: 'Dana',      grup: 'Digital', jumlah_transaksi: Math.round(11*v), total: Math.round(1485000*v) },
+    { metode: 'Cash',      grup: 'Tunai',   jumlah_transaksi: Math.round(34*v), total: Math.round(4420000*v) },
+    { metode: 'Debit BCA', grup: 'Kartu',   jumlah_transaksi: Math.round(8*v),  total: Math.round(1960000*v) },
+    { metode: 'Visa/MC',   grup: 'Kartu',   jumlah_transaksi: Math.round(4*v),  total: Math.round(1400000*v) },
+  ]
+  const categorySales = [
+    { kategori: 'Makanan',     warna: 'amber',  items_sold: Math.round(191*v), items_refunded: Math.round(4*v) },
+    { kategori: 'Minuman',     warna: 'blue',   items_sold: Math.round(298*v), items_refunded: Math.round(2*v) },
+    { kategori: 'Merchandise', warna: 'purple', items_sold: Math.round(31*v),  items_refunded: Math.round(1*v) },
+  ]
+  return {
+    tanggal, grossSales, discounts, refunds, netSales, gratuity, tax, rounding, totalCollected,
+    total_pesanan: Math.round(146*v),
+    aov: Math.round(netSales / Math.round(146*v)),
+    menu_detail: menuDetail,
+    metode_pembayaran: metodePembayaran,
+    category_sales: categorySales,
+    _isDemo: true,
+  }
+}
+
+/* ─── Transform real API response ─────────────────────────────────────────── */
+const transformApiData = (apiData, tanggal) => {
+  const netSales   = Number(apiData.pendapatan || 0)
+  const discounts  = Number(apiData.total_diskon || 0)
+  const grossSales = netSales + discounts
+  const refunds = 0, gratuity = 0, tax = 0, rounding = 0
+  const totalCollected = netSales + gratuity + tax + rounding
+
+  const menuDetail = (apiData.menu_detail || []).map((m, i) => ({
+    ...m,
+    sku: m.sku || ('ITEM-' + String(i + 1).padStart(3, '0')),
+    kategori: m.kategori || 'Lainnya',
+  }))
+
+  const grupMap = { cash: 'Tunai', tunai: 'Tunai', qris: 'Digital' }
+  const metodePembayaran = (apiData.metode_pembayaran || []).map(m => ({
+    ...m, grup: grupMap[m.metode?.toLowerCase()] || 'Digital',
+  }))
+
+  const catMap = {}
+  menuDetail.forEach(m => {
+    const c = m.kategori
+    if (!catMap[c]) catMap[c] = { kategori: c, items_sold: 0, items_refunded: 0, warna: 'gray' }
+    catMap[c].items_sold += Number(m.total_terjual || 0)
+  })
+  const warnaCat = { Makanan: 'amber', Minuman: 'blue', Merchandise: 'purple' }
+  Object.values(catMap).forEach(c => { c.warna = warnaCat[c.kategori] || 'gray' })
+
+  return {
+    tanggal, grossSales, discounts, refunds, netSales, gratuity, tax, rounding, totalCollected,
+    total_pesanan: Number(apiData.total_pesanan || 0),
+    aov: Number(apiData.aov || 0),
+    menu_detail: menuDetail,
+    metode_pembayaran: metodePembayaran,
+    category_sales: Object.values(catMap),
+    _isDemo: false,
+  }
+}
+
+/* ─── CatChip ─────────────────────────────────────────────────────────────── */
+const CatChip = ({ kategori, warna }) => {
+  const cls = {
+    amber:  'bg-amber-50 text-amber-700 border-amber-200',
+    blue:   'bg-blue-50 text-blue-700 border-blue-200',
+    purple: 'bg-purple-50 text-purple-700 border-purple-200',
+    gray:   'bg-gray-50 text-gray-600 border-gray-200',
+  }[warna || 'gray']
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold border ${cls}`}>
+      {kategori}
+    </span>
+  )
+}
+
+/* ─── SummaryRow ─────────────────────────────────────────────────────────── */
+const SummaryRow = ({ label, value, isTotal, isNegative, isHighlight, note }) => (
+  <div className={`flex justify-between items-center py-3.5 px-4 border-b border-gray-50 last:border-0 ${
+    isTotal     ? 'bg-gradient-to-r from-[#14532d] to-[#d4af37] rounded-xl text-white font-black mt-1' :
+    isHighlight ? 'bg-emerald-50/70 border border-emerald-100 rounded-xl font-bold' :
+                  'hover:bg-gray-50/60 transition-colors'
+  }`}>
+    <span className={`text-sm ${isTotal ? 'text-white/90' : isHighlight ? 'text-[#14532d]' : 'text-gray-600'}`}>
+      {label}
+      {note && <span className="ml-1.5 text-[10px] font-normal text-gray-400 italic">{note}</span>}
+    </span>
+    <span className={`text-sm font-bold tabular-nums ${
+      isTotal     ? 'text-white text-base' :
+      isNegative  ? 'text-red-500' :
+      isHighlight ? 'text-[#14532d]' :
+                    'text-gray-800'
+    }`}>
+      {isNegative && value !== 0 ? ('– ' + fRp(Math.abs(value))) : fRp(value)}
+    </span>
+  </div>
+)
+
+/* ─── Main Page ──────────────────────────────────────────────────────────── */
+export default function Laporan() {
+  const { user } = useAuth()
+  const { showAlert } = useAlert()
+  const [tanggal,  setTanggal]  = useState(getLocalDateString())
+  const [outlet,   setOutlet]   = useState('semua')
+  const [loading,  setLoading]  = useState(false)
+  const [data,     setData]     = useState(null)
+  const [itemMode, setItemMode] = useState('income')
+
+  const fetchData = useCallback(async (tgl) => {
+    setLoading(true)
+    try {
+      const res = await api.get('/laporan/ringkasan', { params: { tanggal: tgl } })
+      setData(transformApiData(res.data, tgl))
+    } catch {
+      setData(buildDemoData(tgl))
+    } finally {
+      setLoading(false)
     }
-    fetchTarget()
   }, [])
 
-  const handleSaveTarget = async () => {
-    try {
-      setLoading(true)
-      const res = await api.put('/settings/target-kpi', { target: tempTarget })
-      setKpiTarget(res.data.target)
-      setShowEditTarget(false)
-      showAlert('Target KPI Karyawan berhasil diperbarui!', 'Sukses', 'success')
-    } catch (err) {
-      console.error('Failed to update KPI target', err)
-      showAlert('Gagal memperbarui target', 'Error', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }
-  
-  // Harian
-  const [tanggalHarian, setTanggalHarian] = useState(getLocalDateString())
-  const [dataHarian, setDataHarian] = useState(null)
+  useEffect(() => { fetchData(tanggal) }, []) // eslint-disable-line
 
-  // Bulanan
-  const [bulanBulanan, setBulanBulanan] = useState(new Date().getMonth() + 1)
-  const [tahunBulanan, setTahunBulanan] = useState(new Date().getFullYear())
-  const [dataBulanan, setDataBulanan] = useState(null)
+  const handlePrev = () => { const t = addDays(tanggal, -1); setTanggal(t); fetchData(t) }
+  const handleNext = () => { const t = addDays(tanggal, 1); if (t <= getLocalDateString()) { setTanggal(t); fetchData(t) } }
+  const handleDateChange = (e) => { if (!e.target.value) return; setTanggal(e.target.value); fetchData(e.target.value) }
 
-  // Tahunan
-  const [tahunTahunan, setTahunTahunan] = useState(new Date().getFullYear())
-  const [dataTahunan, setDataTahunan] = useState(null)
+  /* Derived */
+  const sortedItems = data
+    ? [...(data.menu_detail || [])].sort((a, b) =>
+        itemMode === 'income'
+          ? Number(b.total_pendapatan) - Number(a.total_pendapatan)
+          : Number(b.total_terjual)    - Number(a.total_terjual))
+    : []
+  const totalItemIncome = sortedItems.reduce((s, m) => s + Number(m.total_pendapatan), 0)
+  const totalItemQty    = sortedItems.reduce((s, m) => s + Number(m.total_terjual), 0)
 
-  // Cetak Ulang Modal
-  const [printTarget, setPrintTarget] = useState(null)
-  const [printOptions, setPrintOptions] = useState({
-    kasir: true,
-    pelanggan: true,
-    dapur: false,
-    bar: false
-  })
-
-  // Histori
-  const [dariHistori, setDariHistori] = useState(getLocalDateString())
-  const [sampaiHistori, setSampaiHistori] = useState(getLocalDateString())
-  const [dataHistori, setDataHistori] = useState(null)
-  const [halamanHistori, setHalamanHistori] = useState(1)
-  // New Filters for Histori
-  const [filterMetode, setFilterMetode] = useState('semua')
-  const [searchHistori, setSearchHistori] = useState('')
-
-  useEffect(() => {
-    if (tab === 'harian') fetchLaporanHarian()
-    else if (tab === 'bulanan') fetchLaporanBulanan()
-    else if (tab === 'tahunan') fetchLaporanTahunan()
-    else if (tab === 'histori') fetchHistori(1)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab])
-
-  const fetchLaporanHarian = async () => {
-    setLoading(true)
-    try {
-      const res = await api.get('/laporan/ringkasan', { params: { tanggal: tanggalHarian } })
-      setDataHarian(res.data)
-    } catch (err) {
-      console.error('Gagal fetch laporan harian:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const fetchLaporanBulanan = async () => {
-    setLoading(true)
-    try {
-      const res = await api.get('/laporan/bulanan', { params: { bulan: bulanBulanan, tahun: tahunBulanan } })
-      setDataBulanan(res.data)
-    } catch (err) {
-      console.error('Gagal fetch laporan bulanan:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const fetchLaporanTahunan = async () => {
-    setLoading(true)
-    try {
-      const res = await api.get('/laporan/tahunan', { params: { tahun: tahunTahunan } })
-      setDataTahunan(res.data)
-    } catch (err) {
-      console.error('Gagal fetch laporan tahunan:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const fetchHistori = async (page) => {
-    const p = page || halamanHistori
-    setLoading(true)
-    try {
-      const res = await api.get('/laporan/histori', { 
-        params: { 
-          dari: dariHistori, 
-          sampai: sampaiHistori, 
-          page: p, 
-          limit: 20,
-          metode: filterMetode,
-          search: searchHistori
-        } 
-      })
-      setDataHistori(res.data)
-      setHalamanHistori(res.data.page || 1)
-    } catch (err) {
-      console.error('Gagal fetch histori:', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleDeletePesanan = async (id) => {
-    if (!window.confirm(`Apakah Anda yakin ingin menghapus transaksi #${String(id).padStart(4, '0')}? Tindakan ini tidak dapat dibatalkan.`)) {
-      return
-    }
-    try {
-      await api.delete(`/pesanan/${id}`)
-      showAlert('Transaksi berhasil dihapus!', 'Sukses', 'success')
-      fetchHistori(halamanHistori)
-    } catch (err) {
-      console.error('Gagal hapus transaksi:', err)
-      showAlert(err.response?.data?.message || 'Gagal menghapus transaksi', 'Gagal', 'error')
-    }
-  }
-
-  const handlePrintReceipt = (p) => {
-    setPrintTarget(p);
-    setPrintOptions({ kasir: true, pelanggan: true, dapur: false, bar: false });
-  }
-
-  const executePrint = async () => {
-    if (!printTarget) return;
-    const p = printTarget;
-    const subtotal = (p.items || []).reduce((sum, it) => sum + it.qty * it.harga, 0);
-    const discount_value = p.discount_value || Math.max(0, subtotal - p.total);
-    const strukData = {
-      pesananId: p.id,
-      items: (p.items || []).map(it => ({
-        menu_id: it.menu_id,
-        nama: it.nama_menu,
-        harga: it.harga,
-        qty: it.qty,
-        catatan: it.catatan,
-        kategori_nama: it.kategori_nama,
-        kategori_print_destination: it.kategori_print_destination,
-        kategori2_nama: it.kategori2_nama,
-        kategori2_print_destination: it.kategori2_print_destination
-      })),
-      subtotal,
-      total: p.total,
-      metodeBayar: p.metode_bayar === 'cash' ? 'Tunai' : (p.metode_bayar || 'QRIS'),
-      jumlahBayar: p.total,
-      kembali: 0,
-      meja: p.nomor_meja,
-      tipe: p.tipe,
-      kasir: p.nama_kasir || 'Kasir',
-      tanggal: p.created_at,
-      nama_pelanggan: p.nama_pelanggan,
-      no_telepon: p.no_telepon,
-      discount_name: p.discount_name || 'Promo',
-      discount_value
-    }
-    
-    const selectedTargets = Object.keys(printOptions).filter(k => printOptions[k]);
-    if (selectedTargets.length === 0) {
-      showAlert('Pilih minimal 1 jenis struk', 'Perhatian', 'warning');
-      return;
-    }
-
-    const thermalOk = await cetakStrukThermal(strukData, selectedTargets).catch(() => false);
-    if (!thermalOk) cetakStruk(strukData, selectedTargets);
-    
-    setPrintTarget(null);
-  }
-
-  const fRp = (n) => `Rp ${Number(n).toLocaleString('id-ID')}`
-
-  // =========================================================================
-  // EXPORT UTILITIES (Single Sheet Template)
-  // =========================================================================
-  
-  const exportToExcel = async (sheets, filename) => {
-    try {
-      const wb = XLSX.utils.book_new()
-      if (Array.isArray(sheets)) {
-        sheets.forEach(s => {
-          XLSX.utils.book_append_sheet(wb, s.ws, s.name)
-        })
-      } else {
-        const ws = XLSX.utils.json_to_sheet(sheets)
-        XLSX.utils.book_append_sheet(wb, ws, 'Laporan')
-      }
-
-      if (Capacitor.isNativePlatform()) {
-        const base64 = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
-        const path = `${filename}.xlsx`;
-        
-        const result = await Filesystem.writeFile({
-          path,
-          data: base64,
-          directory: Directory.Cache
-        });
-
-        await Share.share({
-          title: filename,
-          url: result.uri,
-          dialogTitle: 'Bagikan atau Simpan Laporan'
-        });
-      } else {
-        XLSX.writeFile(wb, `${filename}.xlsx`);
-      }
-    } catch (err) {
-      console.error('Gagal export laporan:', err);
-      showAlert('Gagal mengekspor laporan: ' + err.message, 'Error', 'error');
-    }
-  }
-
-  // -------------------------------------------------------------
-  // EXCEL STYLING UTILS
-  // -------------------------------------------------------------
-  const styleTitle = { font: { bold: true, sz: 16, color: { rgb: "634930" } }, alignment: { horizontal: "center" } }
-  const styleHeader = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "634930" } }, alignment: { horizontal: "center", vertical: "center" } }
-  const styleSubHeader = { font: { bold: true, sz: 12, color: { rgb: "8B6F47" } } }
-  const styleBold = { font: { bold: true } }
-  const styleCurrency = { numFmt: "Rp #,##0", alignment: { horizontal: "right" } }
-  const styleCurrencyBold = { font: { bold: true }, numFmt: "Rp #,##0", alignment: { horizontal: "right" }, fill: { fgColor: { rgb: "F5F0E8" } } }
-  const styleCenter = { alignment: { horizontal: "center" } }
-  
-  const createCell = (val, styleObj) => ({ v: val, t: typeof val === 'number' ? 'n' : 's', s: styleObj })
-
-  const pctOf = (val, total) => total > 0 ? ((val / total) * 100).toFixed(1) + '%' : '0.0%'
-
-  const METODE_LABELS = { cash: 'Cash', tunai: 'Cash', qris: 'QRIS' }
-  const METODE_ORDER = ['Cash', 'QRIS']
-
-  const buildMetodeRows = (metodePembayaran, grossRevenue) => {
+  const buildPaymentGroups = (methods) => {
+    const grupOrder = ['Digital', 'Tunai', 'Kartu']
     const map = {}
-    METODE_ORDER.forEach(m => { map[m] = { jumlah: 0, total: 0 } })
-    ;(metodePembayaran || []).forEach(mp => {
-      const label = METODE_LABELS[mp.metode] || 'Lainnya'
-      if (!map[label]) map[label] = { jumlah: 0, total: 0 }
-      map[label].jumlah += Number(mp.jumlah_transaksi)
-      map[label].total += Number(mp.total)
-    })
-    return METODE_ORDER.map(label => ({
-      label,
-      jumlah: map[label]?.jumlah || 0,
-      total: map[label]?.total || 0,
-      pct: pctOf(map[label]?.total || 0, grossRevenue),
-    }))
+    ;(methods || []).forEach(m => { const g = m.grup || 'Digital'; if (!map[g]) map[g] = []; map[g].push(m) })
+    return grupOrder.filter(g => map[g]).map(g => ({ grup: g, methods: map[g] }))
   }
+  const paymentGroups    = data ? buildPaymentGroups(data.metode_pembayaran) : []
+  const grandTrxTotal    = (data?.metode_pembayaran || []).reduce((s, m) => s + Number(m.jumlah_transaksi), 0)
+  const grandAmountTotal = (data?.metode_pembayaran || []).reduce((s, m) => s + Number(m.total), 0)
 
-  const handleExportHarian = () => {
-    if (!dataHarian) return showAlert('Tidak ada data untuk diexport', 'Gagal', 'error')
-    const d = dataHarian
-    const netRevenue = Number(d.pendapatan) || 0
-    const totalDiskon = Number(d.total_diskon) || 0
-    const gross = netRevenue + totalDiskon
+  const catIncome = {}
+  ;(data?.menu_detail || []).forEach(m => { catIncome[m.kategori] = (catIncome[m.kategori] || 0) + Number(m.total_pendapatan) })
+  const totalCatSold = (data?.category_sales || []).reduce((s, c) => s + c.items_sold, 0)
+  const totalCatRef  = (data?.category_sales || []).reduce((s, c) => s + c.items_refunded, 0)
 
-    const ringkasan = [
-      [createCell('LAPORAN POS HARIAN – New Chapter', styleTitle), '', '', ''],
-      [],
-      [createCell('Tanggal', styleBold), createCell(d.tanggal, styleBold)],
-      [],
-      [createCell('A. RINGKASAN PENJUALAN', styleSubHeader)],
-      [createCell('Keterangan', styleHeader), createCell('Nilai (Rp)', styleHeader)],
-      ['Gross Revenue (Total Penjualan Kotor)', createCell(gross, styleCurrency)],
-      ['Total Diskon / Promo', createCell(totalDiskon, styleCurrency)],
-      ['Service Charge', createCell(0, styleCurrency)],
-      [createCell('Net Revenue (Pendapatan Bersih)', styleBold), createCell(netRevenue, styleCurrencyBold)],
-      ['Jumlah Transaksi', createCell(d.total_pesanan, styleCenter)],
-      ['Average Order Value (AOV)', createCell(d.aov || 0, styleCurrency)],
-      [],
-      [createCell('B. METODE PEMBAYARAN', styleSubHeader)],
-      [createCell('Metode', styleHeader), createCell('Jumlah Transaksi', styleHeader), createCell('Total (Rp)', styleHeader), createCell('% dari Total', styleHeader)],
-    ]
-    const metodeRows = buildMetodeRows(d.metode_pembayaran, gross)
-    metodeRows.forEach(m => ringkasan.push([m.label, createCell(m.jumlah, styleCenter), createCell(m.total, styleCurrency), createCell(m.pct, styleCenter)]))
-    const totalTrx = metodeRows.reduce((s, m) => s + m.jumlah, 0)
-    ringkasan.push([createCell('TOTAL', styleBold), createCell(totalTrx, {font: {bold: true}, alignment: {horizontal: "center"}}), createCell(gross, styleCurrencyBold), createCell('100%', {font: {bold: true}, alignment: {horizontal: "center"}})])
-    
-    ringkasan.push([])
-    ringkasan.push([createCell('C. MENU TERLARIS', styleSubHeader)])
-    ringkasan.push([createCell('Menu', styleHeader), createCell('Total Terjual', styleHeader)])
-    ;(d.menu_terlaris || []).forEach(m => ringkasan.push([m.nama, createCell(`${m.total_terjual} porsi`, styleCenter)]))
-
-    ringkasan.push([])
-    ringkasan.push([createCell('D. PENJUALAN PER MENU (HPP & GROSS PROFIT)', styleSubHeader)])
-    ringkasan.push([createCell('Menu', styleHeader), createCell('Kategori', styleHeader), createCell('HPP', styleHeader), createCell('Harga Jual', styleHeader), createCell('Terjual', styleHeader), createCell('Omset', styleHeader), createCell('Total HPP', styleHeader), createCell('Gross Profit', styleHeader)])
-    ;(d.menu_detail || []).forEach(m => {
-      const omset = Number(m.total_pendapatan)
-      const hppTotal = Number(m.total_hpp || 0)
-      ringkasan.push([m.nama, m.kategori || '-', createCell(Number(m.hpp), styleCurrency), createCell(Number(m.harga_jual), styleCurrency), createCell(Number(m.total_terjual), styleCenter), createCell(omset, styleCurrency), createCell(hppTotal, styleCurrency), createCell(omset - hppTotal, styleCurrency)])
-    })
-    const totalOmsetMenu = (d.menu_detail || []).reduce((s, m) => s + Number(m.total_pendapatan), 0)
-    const totalHppMenu = (d.menu_detail || []).reduce((s, m) => s + Number(m.total_hpp || 0), 0)
-    ringkasan.push([createCell('TOTAL', styleBold), '', '', '', '', createCell(totalOmsetMenu, styleCurrencyBold), createCell(totalHppMenu, styleCurrencyBold), createCell(totalOmsetMenu - totalHppMenu, styleCurrencyBold)])
-
-    const ws = XLSX.utils.aoa_to_sheet(ringkasan)
-    ws['!cols'] = [{ wch: 35 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 18 }]
-    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }]
-
-    exportToExcel([{ ws, name: 'Laporan Harian' }], `Laporan-Harian-${d.tanggal}`)
-  }
-
-  const handleExportBulanan = () => {
-    if (!dataBulanan) return showAlert('Tidak ada data untuk diexport', 'Gagal', 'error')
-    const d = dataBulanan
-    const bulanNama = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
-    const netRevenue = Number(d.net_revenue) || 0
-    const totalDiskon = Number(d.total_diskon) || 0
-    const gross = netRevenue + totalDiskon
-
+  /* Export */
+  const handleExport = async () => {
+    if (!data) return showAlert('Tidak ada data', 'Gagal', 'error')
+    const d = data
+    const cc = (val, s) => ({ v: val, t: typeof val === 'number' ? 'n' : 's', s })
+    const sH   = { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '14532d' } }, alignment: { horizontal: 'center' } }
+    const sB   = { font: { bold: true } }
+    const sC   = { numFmt: 'Rp #,##0', alignment: { horizontal: 'right' } }
+    const sCB  = { font: { bold: true }, numFmt: 'Rp #,##0', alignment: { horizontal: 'right' }, fill: { fgColor: { rgb: 'F5F0E8' } } }
+    const sCt  = { alignment: { horizontal: 'center' } }
     const rows = [
-      [createCell('LAPORAN POS BULANAN – New Chapter', styleTitle), '', '', ''],
-      [],
-      [createCell('Periode', styleBold), createCell(`${bulanNama[d.bulan - 1]} ${d.tahun}`, styleBold)],
-      [],
-      [createCell('A. RINGKASAN PENJUALAN', styleSubHeader)],
-      [createCell('Keterangan', styleHeader), createCell('Nilai (Rp)', styleHeader)],
-      ['Gross Revenue (Total Penjualan Kotor)', createCell(gross, styleCurrency)],
-      ['Total Diskon / Promo', createCell(totalDiskon, styleCurrency)],
-      ['Service Charge', createCell(0, styleCurrency)],
-      [createCell('Net Revenue (Pendapatan Bersih)', styleBold), createCell(netRevenue, styleCurrencyBold)],
-      ['Total Transaksi', createCell(d.total_pesanan || 0, styleCenter)],
-      ['Average Order Value', createCell(gross > 0 && d.total_pesanan > 0 ? Math.round(gross / d.total_pesanan) : 0, styleCurrency)],
-      [],
-      [createCell('B. METODE PEMBAYARAN', styleSubHeader)],
-      [createCell('Metode', styleHeader), createCell('Jumlah Transaksi', styleHeader), createCell('Total (Rp)', styleHeader), createCell('% dari Total', styleHeader)],
+      [cc('LAPORAN KASIR POS HARIAN – New Chapter', { font: { bold: true, sz: 14, color: { rgb: '14532d' } }, alignment: { horizontal: 'center' } }), '', '', '', ''],
+      [], [cc('Tanggal', sB), formatTanggal(d.tanggal)], [],
+      [cc('1. RINGKASAN PENJUALAN (Sales Summary)', { font: { bold: true, sz: 12, color: { rgb: '14532d' } } })],
+      [cc('Keterangan', sH), cc('Jumlah (Rp)', sH)],
+      ['Gross Sales', cc(d.grossSales, sC)], ['Discounts', cc(-d.discounts, sC)], ['Refunds', cc(-d.refunds, sC)],
+      [cc('Net Sales', sB), cc(d.netSales, sCB)],
+      ['Gratuity / Service Charge', cc(d.gratuity, sC)], ['Tax (PPN 11%)', cc(d.tax, sC)], ['Rounding', cc(d.rounding, sC)],
+      [cc('Total Collected', sB), cc(d.totalCollected, sCB)], [],
+      [cc('2. PENJUALAN PER ITEM (Item Sales)', { font: { bold: true, sz: 12, color: { rgb: '14532d' } } })],
+      [cc('Nama Item', sH), cc('SKU', sH), cc('Kategori', sH), cc('Penjualan (Rp)', sH), cc('Qty', sH)],
     ]
-    const metodeRows = buildMetodeRows(d.metode_pembayaran, gross)
-    metodeRows.forEach(m => rows.push([m.label, createCell(m.jumlah, styleCenter), createCell(m.total, styleCurrency), createCell(m.pct, styleCenter)]))
-    const totalTrx = metodeRows.reduce((s, m) => s + m.jumlah, 0)
-    rows.push([createCell('TOTAL', styleBold), createCell(totalTrx, {font: {bold: true}, alignment: {horizontal: "center"}}), createCell(gross, styleCurrencyBold), createCell('100%', {font: {bold: true}, alignment: {horizontal: "center"}})])
-    
-    rows.push([])
-    rows.push([createCell('C. DETAIL HARIAN', styleSubHeader)])
-    rows.push([createCell('Tanggal', styleHeader), createCell('Pendapatan', styleHeader), createCell('Total Pesanan', styleHeader)])
-    ;(d.harian || []).forEach(h => rows.push([
-      new Date(h.tanggal).toLocaleDateString('id-ID'),
-      createCell(Number(h.pendapatan), styleCurrency),
-      createCell(h.total_pesanan, styleCenter),
+    sortedItems.forEach(m => rows.push([m.nama, m.sku || '-', m.kategori || '-', cc(Number(m.total_pendapatan), sC), cc(Number(m.total_terjual), sCt)]))
+    rows.push([cc('TOTAL', sB), '', '', cc(totalItemIncome, sCB), cc(totalItemQty, { ...sB, ...sCt })], [])
+    rows.push([cc('3. METODE PEMBAYARAN (Payment Methods)', { font: { bold: true, sz: 12, color: { rgb: '14532d' } } })])
+    rows.push([cc('Metode', sH), cc('Jumlah Transaksi', sH), cc('Total Diterima (Rp)', sH)])
+    paymentGroups.forEach(g => {
+      rows.push([cc('▸ ' + g.grup, { font: { bold: true } }), '', ''])
+      g.methods.forEach(m => rows.push(['  ' + m.metode, cc(m.jumlah_transaksi, sCt), cc(Number(m.total), sC)]))
+    })
+    rows.push([cc('TOTAL', sB), cc(grandTrxTotal, { ...sB, ...sCt }), cc(grandAmountTotal, sCB)], [])
+    rows.push([cc('4. PENJUALAN PER KATEGORI (Category Sales)', { font: { bold: true, sz: 12, color: { rgb: '14532d' } } })])
+    rows.push([cc('Kategori', sH), cc('Items Terjual', sH), cc('Items Refund', sH), cc('Net Terjual', sH), cc('Gross Sales (Rp)', sH)])
+    ;(d.category_sales || []).forEach(c => rows.push([
+      c.kategori, cc(c.items_sold, sCt), cc(c.items_refunded, sCt),
+      cc(c.items_sold - c.items_refunded, sCt), cc(catIncome[c.kategori] || 0, sC),
     ]))
-
-    rows.push([])
-    rows.push([createCell('D. PENJUALAN PER MENU (HPP & GROSS PROFIT)', styleSubHeader)])
-    rows.push([createCell('Menu', styleHeader), createCell('Kategori', styleHeader), createCell('HPP', styleHeader), createCell('Harga Jual', styleHeader), createCell('Terjual', styleHeader), createCell('Omset', styleHeader), createCell('Total HPP', styleHeader), createCell('Gross Profit', styleHeader)])
-    ;(d.menu_detail || []).forEach(m => {
-      const omset = Number(m.total_pendapatan)
-      const hppTotal = Number(m.total_hpp || 0)
-      rows.push([m.nama, m.kategori || '-', createCell(Number(m.hpp), styleCurrency), createCell(Number(m.harga_jual), styleCurrency), createCell(Number(m.total_terjual), styleCenter), createCell(omset, styleCurrency), createCell(hppTotal, styleCurrency), createCell(omset - hppTotal, styleCurrency)])
-    })
-    const totalOmsetMenu = (d.menu_detail || []).reduce((s, m) => s + Number(m.total_pendapatan), 0)
-    const totalHppMenu = (d.menu_detail || []).reduce((s, m) => s + Number(m.total_hpp || 0), 0)
-    rows.push([createCell('TOTAL', styleBold), '', '', '', '', createCell(totalOmsetMenu, styleCurrencyBold), createCell(totalHppMenu, styleCurrencyBold), createCell(totalOmsetMenu - totalHppMenu, styleCurrencyBold)])
+    rows.push([cc('TOTAL', sB), cc(totalCatSold, { ...sB, ...sCt }), cc(totalCatRef, { ...sB, ...sCt }), cc(totalCatSold - totalCatRef, { ...sB, ...sCt }), cc(Object.values(catIncome).reduce((a, b) => a + b, 0), sCB)])
 
     const ws = XLSX.utils.aoa_to_sheet(rows)
-    ws['!cols'] = [{ wch: 35 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 12 }, { wch: 18 }, { wch: 18 }, { wch: 18 }]
-    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }]
-
-    exportToExcel([{ ws, name: 'Laporan Bulanan' }], `Laporan-Bulanan-${d.bulan}-${d.tahun}`)
-  }
-
-  const handleExportHistori = () => {
-    if (!dataHistori || dataHistori.data.length === 0) return showAlert('Tidak ada data untuk diexport', 'Gagal', 'error')
-
-    const rows = [
-      [createCell('HISTORI PEMBELIAN POS – New Chapter', styleTitle), '', '', '', '', '', '', ''],
-      [],
-      [createCell('Periode', styleBold), `${dariHistori} s/d ${sampaiHistori}`],
-      [createCell('Filter', styleBold), `Metode: ${filterMetode} | Search: ${searchHistori || '-'}`],
-      [],
-      [
-        createCell('No Pesanan', styleHeader),
-        createCell('Tanggal', styleHeader),
-        createCell('Tipe', styleHeader),
-        createCell('Kasir', styleHeader),
-        createCell('Menu', styleHeader),
-        createCell('Qty', styleHeader),
-        createCell('Harga', styleHeader),
-        createCell('Subtotal', styleHeader),
-        createCell('Metode Bayar', styleHeader),
-        createCell('Total Pesanan', styleHeader)
-      ]
-    ]
-
-    dataHistori.data.forEach(p => {
-      (p.items || []).forEach((item, idx) => {
-        rows.push([
-          idx === 0 ? `#${String(p.id).padStart(4, '0')}` : '',
-          idx === 0 ? new Date(p.created_at).toLocaleString('id-ID') : '',
-          idx === 0 ? (p.tipe === 'take-away' ? 'Take Away' : 'Dine In') : '',
-          idx === 0 ? (p.nama_kasir || 'Web Order') : '',
-          item.nama_menu,
-          createCell(item.qty, styleCenter),
-          createCell(Number(item.harga), styleCurrency),
-          createCell(Number(item.harga) * item.qty, styleCurrency),
-          idx === 0 ? (p.metode_bayar || '-') : '',
-          idx === 0 ? createCell(Number(p.total), styleCurrencyBold) : ''
-        ])
-      })
-    })
-
-    const ws = XLSX.utils.aoa_to_sheet(rows)
-    ws['!cols'] = [{ wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 15 }, { wch: 25 }, { wch: 8 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 15 }]
-    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 9 } }]
-
-    exportToExcel([{ ws, name: 'Histori' }], `Histori-Pembelian-${dariHistori}-to-${sampaiHistori}`)
-  }
-
-  // =========================================================================
-  // UI COMPONENTS
-  // =========================================================================
-
-  const renderMenuDetailTable = (menuData, sectionLabel) => {
-    if (!menuData || menuData.length === 0) return null
-    const totalOmset = menuData.reduce((s, m) => s + Number(m.total_pendapatan), 0)
-    const totalHpp = menuData.reduce((s, m) => s + Number(m.total_hpp || 0), 0)
-    const totalProfit = totalOmset - totalHpp
-    const isManagement = user?.role === 'owner' || user?.role === 'manager' || user?.role === 'admin'
-
-    return (
-      <div className="bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 flex flex-col">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="font-bold text-xl flex items-center gap-2 text-[#14532d]">
-             {sectionLabel}. Analisis Penjualan Menu
-          </h2>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-gray-100 text-gray-400 text-xs uppercase tracking-wider">
-                <th className="pb-3 font-semibold">Menu</th>
-                <th className="pb-3 font-semibold text-right">Harga Jual</th>
-                <th className="pb-3 font-semibold text-center">Terjual</th>
-                <th className="pb-3 font-semibold text-right">Omset</th>
-                {isManagement && <th className="pb-3 font-semibold text-right">Gross Profit</th>}
-              </tr>
-            </thead>
-            <tbody className="text-sm">
-              {menuData.map((m, i) => {
-                const omset = Number(m.total_pendapatan)
-                const hppTotal = Number(m.total_hpp || 0)
-                const profit = omset - hppTotal
-                return (
-                  <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
-                    <td className="py-3.5 font-bold text-[#14532d]">{m.nama} <br/><span className="text-xs text-gray-400 font-normal">{m.kategori || '-'}</span></td>
-                    <td className="py-3.5 text-right font-medium text-gray-500">{fRp(m.harga_jual)}</td>
-                    <td className="py-3.5 text-center font-bold text-emerald-600">{m.total_terjual}</td>
-                    <td className="py-3.5 text-right font-bold text-emerald-600">{fRp(omset)}</td>
-                    {isManagement && <td className={`py-3.5 text-right font-black ${profit >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>{fRp(profit)}</td>}
-                  </tr>
-                )
-              })}
-              <tr className="bg-emerald-50/50 border-t-2 border-emerald-200">
-                <td colSpan={3} className="py-4 font-black text-emerald-900 text-right">TOTAL KESELURUHAN :</td>
-                <td className="py-4 text-right font-black text-emerald-700">{fRp(totalOmset)}</td>
-                {isManagement && <td className={`py-4 text-right font-black ${totalProfit >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>{fRp(totalProfit)}</td>}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    )
+    ws['!cols'] = [{ wch: 32 }, { wch: 14 }, { wch: 16 }, { wch: 20 }, { wch: 14 }]
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 4 } }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Laporan Kasir Harian')
+    try {
+      if (Capacitor.isNativePlatform()) {
+        const base64 = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' })
+        const path = 'Laporan-Kasir-' + d.tanggal + '.xlsx'
+        const result = await Filesystem.writeFile({ path, data: base64, directory: Directory.Cache })
+        await Share.share({ title: path, url: result.uri, dialogTitle: 'Simpan / Bagikan Laporan' })
+      } else {
+        // Manual Blob download – lebih reliable dari XLSX.writeFile di semua browser
+        const wbArray = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+        const blob = new Blob([wbArray], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'Laporan-Kasir-' + d.tanggal + '.xlsx'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
+    } catch (err) { showAlert('Gagal export: ' + err.message, 'Error', 'error') }
   }
 
   return (
     <MobileLayout activeMenu="Laporan">
-      {/* Top Header */}
+      {/* Desktop header */}
       <div className="hidden lg:flex justify-between items-center px-6 xl:px-10 py-5 bg-white/80 backdrop-blur-md sticky top-0 z-10 border-b border-emerald-100/50 shadow-sm">
         <div>
           <h1 className="text-2xl font-black bg-clip-text text-transparent bg-gradient-to-r from-[#14532d] to-[#b8860b]">
-            Analytics & Reports
+            Laporan Kasir Harian
           </h1>
-          <p className="text-sm text-gray-500 font-medium mt-0.5">Analisis mendalam performa bisnis New Chapter</p>
+          <p className="text-sm text-gray-500 font-medium mt-0.5">Ringkasan penjualan, item, pembayaran &amp; kategori per hari</p>
         </div>
         <div className="flex items-center gap-4">
           <div className="text-right">
             <p className="text-sm font-bold text-[#14532d]">Halo, {user?.username}</p>
-            <p className="text-xs text-[#d4af37]">Sistem Laporan</p>
+            <p className="text-xs text-[#d4af37]">Laporan Kasir</p>
           </div>
           <div className="w-12 h-12 rounded-full shadow-md flex items-center justify-center text-white font-bold text-xl bg-gradient-to-br from-[#14532d] to-[#d4af37] border-2 border-white">
             {(user?.username || 'K')[0].toUpperCase()}
@@ -534,779 +299,299 @@ export default function Laporan() {
       </div>
 
       <div className="flex-1 p-4 md:p-6 xl:p-10 overflow-y-auto bg-[#F9FAFB]">
-        <div className="max-w-7xl mx-auto space-y-6 md:space-y-8">
-            
-            {/* Navigation Tabs */}
-            <div className="flex p-1.5 bg-white rounded-2xl shadow-sm border border-gray-100 overflow-x-auto custom-scrollbar whitespace-nowrap">
-              {[
-                { id: 'harian', label: 'Harian', icon: <Calendar size={18} /> },
-                { id: 'bulanan', label: 'Bulanan', icon: <CalendarDays size={18} /> },
-                { id: 'tahunan', label: 'Tahunan', icon: <CalendarDays size={18} /> },
-                { id: 'histori', label: 'Histori Transaksi', icon: <Receipt size={18} /> }
-              ].map(t => (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  className={`flex items-center gap-2 px-6 py-3 font-bold text-sm rounded-xl transition-all duration-300 flex-shrink-0 ${tab === t.id ? 'bg-gradient-to-r from-[#14532d] to-[#d4af37] text-white shadow-md' : 'text-gray-500 hover:bg-emerald-50 hover:text-[#14532d]'}`}
-                >
-                  <span>{t.icon}</span> {t.label}
+        <div className="max-w-5xl mx-auto space-y-6">
+
+          {/* ── FILTER BAR ── */}
+          <div className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
+            <div className="flex flex-wrap gap-4 items-end">
+              {/* Outlet */}
+              <div className="flex-1 min-w-[180px]">
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
+                  <Store size={12} className="inline mr-1" />Outlet / Cabang
+                </label>
+                <div className="relative">
+                  <select value={outlet} onChange={e => setOutlet(e.target.value)}
+                    className="w-full appearance-none px-4 py-2.5 pr-9 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm">
+                    <option value="semua">Semua Outlet</option>
+                    <option value="pusat">New Chapter – Pusat</option>
+                    <option value="selatan">New Chapter – Selatan</option>
+                    <option value="timur">New Chapter – Timur</option>
+                  </select>
+                  <ChevronRight size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 rotate-90 pointer-events-none" />
+                </div>
+              </div>
+              <div className="hidden sm:block w-px h-10 bg-gray-100 self-end mb-0.5" />
+              {/* Date */}
+              <div className="flex-1 min-w-[220px]">
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">
+                  <Calendar size={12} className="inline mr-1" />Tanggal Transaksi
+                </label>
+                <div className="flex items-center gap-2">
+                  <button onClick={handlePrev}
+                    className="w-9 h-9 rounded-xl bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-[#14532d] hover:text-white hover:border-[#14532d] transition-all"
+                    aria-label="Hari sebelumnya">
+                    <ChevronLeft size={16} />
+                  </button>
+                  <input type="date" value={tanggal} onChange={handleDateChange} max={getLocalDateString()}
+                    className="flex-1 px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm" />
+                  <button onClick={handleNext} disabled={tanggal >= getLocalDateString()}
+                    className="w-9 h-9 rounded-xl bg-gray-50 border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-[#14532d] hover:text-white hover:border-[#14532d] transition-all disabled:opacity-30 disabled:pointer-events-none"
+                    aria-label="Hari berikutnya">
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
+              </div>
+              {/* Actions */}
+              <div className="flex gap-2 self-end">
+                <button onClick={() => fetchData(tanggal)} disabled={loading}
+                  className="h-[42px] px-4 rounded-xl font-bold text-white bg-gradient-to-r from-[#14532d] to-[#d4af37] shadow-md hover:-translate-y-0.5 transition-all text-sm flex items-center gap-2 disabled:opacity-60">
+                  <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+                  {loading ? 'Memuat...' : 'Tampilkan'}
                 </button>
-              ))}
+                {data && (
+                  <button onClick={handleExport}
+                    className="h-[42px] px-4 rounded-xl font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-600 hover:text-white transition-all text-sm flex items-center gap-2">
+                    <Download size={15} />Export Excel
+                  </button>
+                )}
+              </div>
             </div>
-
-            {/* TAB HARIAN */}
-            {tab === 'harian' && (
-              <div className="space-y-6 animate-in fade-in duration-500">
-                <div className="flex flex-wrap md:flex-nowrap justify-between items-end bg-white p-5 rounded-3xl shadow-sm border border-gray-100 gap-4">
-                  <div className="flex gap-3 items-end w-full md:w-auto">
-                    <div className="flex-1">
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Pilih Tanggal</label>
-                      <input type="date" value={tanggalHarian} onChange={(e) => setTanggalHarian(e.target.value)} className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm" />
-                    </div>
-                    <button onClick={fetchLaporanHarian} className="px-6 py-2.5 rounded-xl font-bold text-white transition-all hover:-translate-y-0.5 shadow-md bg-gradient-to-r from-[#14532d] to-[#d4af37] text-sm h-[42px]">
-                      Analisa
-                    </button>
-                  </div>
-                  {dataHarian && !isInvestor && (
-                    <button onClick={handleExportHarian} className="w-full md:w-auto px-6 py-2.5 rounded-xl font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 transition-all hover:bg-emerald-600 hover:text-white shadow-sm flex items-center justify-center gap-2 text-sm h-[42px]">
-                      <Download size={18} /> Export Laporan Pro
-                    </button>
-                  )}
-                </div>
-
-                {loading ? (
-                  <div className="flex items-center justify-center h-48"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#14532d]"></div></div>
-                ) : dataHarian ? (
-                  <div className="space-y-8">
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                      {/* Ringkasan Pendapatan */}
-                      <div className="bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-                        <h2 className="font-bold text-xl text-[#14532d] mb-6">A. Executive Summary</h2>
-                        <div className="space-y-4">
-                          <div className="flex justify-between items-center py-4 px-5 bg-gradient-to-r from-emerald-500 to-teal-600 rounded-2xl shadow-inner text-white mt-4">
-                            <span className="font-bold">Total Penjualan / Omset</span>
-                            <span className="font-black text-2xl">{fRp(dataHarian.pendapatan)}</span>
-                          </div>
-                          <div className="flex justify-between items-center py-4 px-5 bg-gradient-to-r from-emerald-500 to-emerald-600 rounded-2xl shadow-inner text-white mt-4">
-                            <span className="font-bold">Gross Profit (Omset Murni)</span>
-                            <span className="font-black text-2xl">{fRp(dataHarian.gross_profit || 0)}</span>
-                          </div>
-                          <div className="grid grid-cols-3 gap-3 pt-2">
-                            <div className="bg-emerald-50 rounded-2xl p-3 border border-emerald-100 text-center">
-                              <p className="text-[10px] font-bold text-emerald-700 uppercase mb-1">Pesanan Selesai</p>
-                              <p className="text-xl font-black text-[#14532d]">{dataHarian.total_pesanan}</p>
-                            </div>
-                            <div className="bg-blue-50 rounded-2xl p-3 border border-blue-100 text-center">
-                              <p className="text-[10px] font-bold text-blue-700 uppercase mb-1">Kunjungan Web</p>
-                              <p className="text-xl font-black text-blue-800">{dataHarian.total_kunjungan || 0}</p>
-                            </div>
-                            <div className="bg-emerald-50 rounded-2xl p-3 border border-emerald-100 text-center">
-                              <p className="text-[10px] font-bold text-emerald-700 uppercase mb-1">Avg Order Value</p>
-                              <p className="text-sm font-black text-[#14532d] mt-1">{fRp(dataHarian.aov || 0)}</p>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      {/* Metode Pembayaran */}
-                      <div className="bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 flex flex-col justify-between">
-                        <div>
-                          <h2 className="font-bold text-xl text-[#14532d] mb-6">B. Arus Kas (Metode Bayar)</h2>
-                          <div className="overflow-x-auto mb-4">
-                            <table className="w-full text-left border-collapse">
-                              <thead>
-                                <tr className="border-b border-gray-100 text-gray-400 text-xs uppercase tracking-wider">
-                                  <th className="pb-3 font-semibold">Metode</th>
-                                  <th className="pb-3 font-semibold text-center">Trx</th>
-                                  <th className="pb-3 font-semibold text-right">Total</th>
-                                  <th className="pb-3 font-semibold text-right">%</th>
-                                </tr>
-                              </thead>
-                              <tbody className="text-sm">
-                                {buildMetodeRows(dataHarian.metode_pembayaran, dataHarian.pendapatan).map((m, i) => (
-                                  <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
-                                    <td className="py-4 font-bold text-[#14532d]">{m.label}</td>
-                                    <td className="py-4 text-center font-medium text-gray-500">{m.jumlah}</td>
-                                    <td className="py-4 text-right font-bold text-emerald-600">{fRp(m.total)}</td>
-                                    <td className="py-4 text-right font-bold text-emerald-600">{m.pct}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-
-                        {/* Donut Chart */}
-                        <div className="border-t border-gray-100 pt-4 h-[220px]">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                              <Pie
-                                data={buildMetodeRows(dataHarian.metode_pembayaran, dataHarian.pendapatan).map(m => ({
-                                  name: m.label,
-                                  value: Number(m.total)
-                                }))}
-                                cx="50%"
-                                cy="50%"
-                                innerRadius={50}
-                                outerRadius={70}
-                                paddingAngle={4}
-                                dataKey="value"
-                              >
-                                {[
-                                  { name: 'Cash', color: '#14532d' },
-                                  { name: 'QRIS', color: '#22B214' }
-                                ].map((item, idx) => (
-                                  <Cell key={`cell-${idx}`} fill={item.color} />
-                                ))}
-                              </Pie>
-                              <Tooltip formatter={(value) => fRp(value)} />
-                              <Legend iconType="circle" />
-                            </PieChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Hourly Sales Chart (Recharts) */}
-                    <div className="bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-                      <h2 className="font-bold text-xl text-[#14532d] mb-6">⏰ Tren Penjualan per Jam</h2>
-                      <div className="h-[280px]">
-                        {dataHarian.pendapatan_per_jam && dataHarian.pendapatan_per_jam.length > 0 ? (
-                          <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart
-                              data={dataHarian.pendapatan_per_jam.map(h => ({
-                                name: `${String(h.jam).padStart(2, '0')}:00`,
-                                'Omset': Number(h.total)
-                              }))}
-                              margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
-                            >
-                              <defs>
-                                <linearGradient id="colorHarianOmset" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#14532d" stopOpacity={0.3}/>
-                                  <stop offset="95%" stopColor="#14532d" stopOpacity={0.0}/>
-                                </linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#f5f5f5" />
-                              <XAxis dataKey="name" stroke="#a0a0a0" fontSize={11} fontStyle="bold" />
-                              <YAxis stroke="#a0a0a0" fontSize={11} tickFormatter={(v) => `Rp ${v/1000}k`} />
-                              <Tooltip formatter={(value) => fRp(value)} />
-                              <Area type="monotone" dataKey="Omset" stroke="#14532d" fillOpacity={1} fill="url(#colorHarianOmset)" strokeWidth={3} />
-                            </AreaChart>
-                          </ResponsiveContainer>
-                        ) : (
-                          <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-                            Belum ada data transaksi jam berjalan
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {renderMenuDetailTable(dataHarian.menu_detail, 'C')}
-                  </div>
-                ) : null}
-              </div>
-            )}
-
-            {/* TAB BULANAN */}
-            {tab === 'bulanan' && (
-              <div className="space-y-6 animate-in fade-in duration-500">
-                <div className="flex flex-wrap md:flex-nowrap justify-between items-end bg-white p-5 rounded-3xl shadow-sm border border-gray-100 gap-4">
-                  <div className="flex flex-wrap gap-3 items-end w-full md:w-auto">
-                    <div className="flex-1 min-w-[120px]">
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Bulan</label>
-                      <select value={bulanBulanan} onChange={(e) => setBulanBulanan(parseInt(e.target.value))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm">
-                        {[...Array(12)].map((_, i) => <option key={i + 1} value={i + 1}>{new Date(2024, i).toLocaleString('id-ID', { month: 'long' })}</option>)}
-                      </select>
-                    </div>
-                    <div className="flex-1 min-w-[100px]">
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Tahun</label>
-                      <select value={tahunBulanan} onChange={(e) => setTahunBulanan(parseInt(e.target.value))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm">
-                        {[...Array(5)].map((_, i) => <option key={i} value={new Date().getFullYear() - 2 + i}>{new Date().getFullYear() - 2 + i}</option>)}
-                      </select>
-                    </div>
-                    <button onClick={fetchLaporanBulanan} className="w-full sm:w-auto px-6 py-2.5 rounded-xl font-bold text-white transition-all shadow-md bg-gradient-to-r from-[#14532d] to-[#d4af37] text-sm h-[42px]">
-                      Analisa
-                    </button>
-                  </div>
-                  {dataBulanan && !isInvestor && (
-                    <button onClick={handleExportBulanan} className="w-full md:w-auto px-6 py-2.5 rounded-xl font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 transition-all hover:bg-emerald-600 hover:text-white shadow-sm flex items-center justify-center gap-2 text-sm h-[42px]">
-                      <Download size={18} /> Export Laporan Pro
-                    </button>
-                  )}
-                </div>
-
-                {loading ? (
-                  <div className="flex items-center justify-center h-48"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#14532d]"></div></div>
-                ) : dataBulanan ? (
-                  <div className="space-y-8">
-                    {/* KPI Target Karyawan (Bonus Tracker) */}
-                    <div className="bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-                      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-[#14532d] flex items-center justify-center border border-emerald-100 shadow-sm flex-shrink-0">
-                            <Target size={20} />
-                          </div>
-                          <div>
-                            <h2 className="font-bold text-lg text-[#14532d]">KPI Target & Bonus Karyawan</h2>
-                            <p className="text-xs text-gray-500 font-medium">Transparansi target omset bulanan untuk kesejahteraan tim</p>
-                          </div>
-                        </div>
-
-                        {/* Target Display and Inline Edit */}
-                        <div className="bg-stone-50 px-4 py-2 rounded-2xl border border-stone-100 flex items-center gap-3">
-                          {showEditTarget ? (
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-gray-500">Rp</span>
-                              <input
-                                type="number"
-                                value={tempTarget}
-                                onChange={(e) => setTempTarget(Number(e.target.value))}
-                                className="w-28 px-2 py-1 text-sm font-bold border border-gray-300 rounded focus:outline-none focus:border-[#14532d]"
-                              />
-                              <button onClick={handleSaveTarget} className="px-2.5 py-1 bg-[#27ae60] text-white text-xs font-bold rounded hover:bg-[#219653]">
-                                Simpan
-                              </button>
-                              <button onClick={() => { setShowEditTarget(false); setTempTarget(kpiTarget); }} className="px-2.5 py-1 bg-gray-300 text-gray-700 text-xs font-bold rounded hover:bg-gray-400">
-                                Batal
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              <div>
-                                <span className="text-[10px] block font-bold text-gray-400 uppercase tracking-wider">Target Bulanan</span>
-                                <span className="text-sm font-black text-[#14532d]">{fRp(kpiTarget)}</span>
-                              </div>
-                              {(user?.role === 'owner' || user?.role === 'manager' || user?.role === 'admin') && (
-                                <button 
-                                  onClick={() => { setShowEditTarget(true); setTempTarget(kpiTarget); }}
-                                  className="text-gray-400 hover:text-[#14532d] p-1.5 rounded-lg hover:bg-white transition-colors"
-                                >
-                                  <Edit3 size={14} />
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Progress Bar */}
-                      <div className="mb-4">
-                        <div className="flex justify-between text-xs font-bold text-gray-500 mb-1.5">
-                          <span>Progress Capaian: {Math.min(100, Math.round((Number(dataBulanan.net_revenue || dataBulanan.total_pendapatan || 0) / kpiTarget) * 100))}%</span>
-                          <span>{fRp(Number(dataBulanan.net_revenue || dataBulanan.total_pendapatan || 0))} / {fRp(kpiTarget)}</span>
-                        </div>
-                        <div className="w-full h-4 bg-gray-100 rounded-full overflow-hidden border border-gray-200/50 p-0.5">
-                          <div 
-                            className="h-full rounded-full transition-all duration-500 bg-gradient-to-r from-emerald-500 to-[#27ae60]"
-                            style={{ width: `${Math.min(100, Math.round((Number(dataBulanan.net_revenue || dataBulanan.total_pendapatan || 0) / kpiTarget) * 100))}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      {/* Status / Motivator Box */}
-                      {Number(dataBulanan.net_revenue || dataBulanan.total_pendapatan || 0) >= kpiTarget ? (
-                        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-center gap-3">
-                          <CheckCircle2 className="text-[#27ae60] flex-shrink-0" size={24} />
-                          <div>
-                            <p className="text-sm font-black text-emerald-800">🎉 TARGET BULANAN TERCAPAI!</p>
-                            <p className="text-xs text-emerald-600 font-medium">Kerja bagus tim! Seluruh karyawan berhak mendapatkan bonus prestasi bulan ini.</p>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="bg-emerald-50/70 border border-emerald-100 rounded-2xl p-4 flex items-center gap-3">
-                          <span className="text-2xl flex-shrink-0">💪</span>
-                          <div>
-                            <p className="text-sm font-bold text-[#14532d]">Kurang {fRp(Math.max(0, kpiTarget - Number(dataBulanan.net_revenue || dataBulanan.total_pendapatan || 0)))} lagi untuk mencapai bonus!</p>
-                            <p className="text-xs text-[#d4af37] font-medium">Tetap berikan pelayanan terbaik kepada pelanggan untuk meningkatkan penjualan kita hari ini!</p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* General Metrics Grid */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="bg-gradient-to-br from-[#14532d] to-[#d4af37] rounded-3xl p-6 text-white shadow-lg relative overflow-hidden group">
-                         <div className="absolute -right-6 -top-6 w-24 h-24 bg-white/10 rounded-full blur-xl group-hover:scale-150 transition-transform"></div>
-                         <p className="text-emerald-100 text-sm font-semibold mb-2 relative z-10">Total Penjualan</p>
-                         <p className="text-3xl font-black relative z-10">{fRp(dataBulanan.total_pendapatan)}</p>
-                      </div>
-                      <div className="bg-gradient-to-br from-emerald-600 to-teal-700 rounded-3xl p-6 text-white shadow-lg relative overflow-hidden group">
-                         <div className="absolute -right-6 -top-6 w-24 h-24 bg-white/10 rounded-full blur-xl group-hover:scale-150 transition-transform"></div>
-                         <p className="text-emerald-100 text-sm font-semibold mb-2 relative z-10">Gross Profit (Omset Murni)</p>
-                         <p className="text-2xl font-black relative z-10">{fRp(dataBulanan.gross_profit || 0)}</p>
-                      </div>
-                      <div className="bg-white rounded-3xl p-6 border border-gray-100 shadow-sm">
-                         <p className="text-gray-400 text-sm font-bold uppercase mb-2">Transaksi Selesai</p>
-                         <p className="text-2xl font-black text-[#14532d]">{dataBulanan.total_pesanan}</p>
-                      </div>
-                      <div className="bg-white rounded-3xl p-6 border border-gray-100 shadow-sm">
-                         <p className="text-gray-400 text-sm font-bold uppercase mb-2">Average Order Value</p>
-                         <p className="text-2xl font-black text-[#14532d]">{fRp(dataBulanan.total_pendapatan > 0 && dataBulanan.total_pesanan > 0 ? dataBulanan.total_pendapatan / dataBulanan.total_pesanan : 0)}</p>
-                      </div>
-                    </div>
-
-                    {/* Visual Sales Chart (Recharts) */}
-                    <div className="bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-                      <h2 className="font-bold text-xl text-[#14532d] mb-6">📅 Tren Penjualan Harian</h2>
-                      <div className="h-[320px]">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart 
-                            data={(dataBulanan?.harian || []).map(h => ({
-                              name: new Date(h.tanggal).toLocaleDateString('id-ID', { day: 'numeric' }),
-                              'Omset': Number(h.pendapatan),
-                              'Pesanan': Number(h.total_pesanan)
-                            })).sort((a, b) => Number(a.name) - Number(b.name))} 
-                            margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
-                          >
-                            <defs>
-                              <linearGradient id="colorOmset" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#14532d" stopOpacity={0.3}/>
-                                <stop offset="95%" stopColor="#14532d" stopOpacity={0.0}/>
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f5f5f5" />
-                            <XAxis dataKey="name" stroke="#a0a0a0" fontSize={11} fontStyle="bold" />
-                            <YAxis stroke="#a0a0a0" fontSize={11} tickFormatter={(v) => `Rp ${v/1000}k`} />
-                            <Tooltip formatter={(value) => fRp(value)} />
-                            <Legend iconType="rect" />
-                            <Area type="monotone" dataKey="Omset" stroke="#14532d" fillOpacity={1} fill="url(#colorOmset)" strokeWidth={3} />
-                          </AreaChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-
-                    {/* Visitor Traffic vs Orders Chart */}
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                      <div className="lg:col-span-2 bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-                        <h2 className="font-bold text-xl text-[#14532d] mb-2 flex items-center gap-2">
-                          📊 Web Menu vs. Kunjungan Pelanggan
-                        </h2>
-                        <p className="text-xs text-gray-500 mb-6 font-medium">Perbandingan jumlah pengunjung menu digital (Web QR) dengan transaksi kasir selesai</p>
-                        <div className="h-[280px]">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart
-                              data={(dataBulanan?.harian || []).map(h => ({
-                                name: new Date(h.tanggal).toLocaleDateString('id-ID', { day: 'numeric' }),
-                                'Kunjungan Web': Number(h.total_kunjungan || 0),
-                                'Transaksi Kasir': Number(h.total_pesanan || 0)
-                              })).sort((a, b) => Number(a.name) - Number(b.name))}
-                              margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
-                            >
-                              <defs>
-                                <linearGradient id="colorKunjungan" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2}/>
-                                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.0}/>
-                                </linearGradient>
-                                <linearGradient id="colorPesanan" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                                  <stop offset="95%" stopColor="#10b981" stopOpacity={0.0}/>
-                                </linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#f5f5f5" />
-                              <XAxis dataKey="name" stroke="#a0a0a0" fontSize={11} fontStyle="bold" />
-                              <YAxis stroke="#a0a0a0" fontSize={11} />
-                              <Tooltip />
-                              <Legend iconType="circle" />
-                              <Area type="monotone" dataKey="Kunjungan Web" stroke="#3b82f6" fillOpacity={1} fill="url(#colorKunjungan)" strokeWidth={2} />
-                              <Area type="monotone" dataKey="Transaksi Kasir" stroke="#10b981" fillOpacity={1} fill="url(#colorPesanan)" strokeWidth={2} />
-                            </AreaChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-
-                      {/* Visitor Stats Summary Card */}
-                      <div className="bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100 flex flex-col justify-between">
-                        <div>
-                          <h3 className="font-bold text-lg text-[#14532d] mb-4">📈 Konversi Menu QR</h3>
-                          <div className="space-y-4">
-                            <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-2xl">
-                              <span className="text-xs font-bold text-blue-500 uppercase tracking-wider block">Total Kunjungan Web</span>
-                              <span className="text-2xl font-black text-blue-700">{dataBulanan.total_kunjungan || 0}</span>
-                              <span className="text-xs text-blue-600 block mt-0.5">Hits menu public via scan QR</span>
-                            </div>
-                            <div className="bg-emerald-50/50 border border-emerald-100 p-4 rounded-2xl">
-                              <span className="text-xs font-bold text-emerald-500 uppercase tracking-wider block">Total Transaksi Kasir</span>
-                              <span className="text-2xl font-black text-emerald-700">{dataBulanan.total_pesanan || 0}</span>
-                              <span className="text-xs text-emerald-600 block mt-0.5">Order selesai terproses kasir</span>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="mt-4 pt-4 border-t border-gray-100">
-                          <span className="text-xs font-bold text-gray-400 block">Rata-rata Tingkat Konversi</span>
-                          <span className="text-3xl font-black text-[#14532d]">
-                            {dataBulanan.total_kunjungan > 0 
-                              ? Math.round((dataBulanan.total_pesanan / dataBulanan.total_kunjungan) * 100) 
-                              : 0}%
-                          </span>
-                          <p className="text-[10px] text-gray-500 mt-1">Mengukur seberapa efektif menu publik menghasilkan pesanan riil.</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {renderMenuDetailTable(dataBulanan.menu_detail, 'B')}
-                  </div>
-                ) : null}
-              </div>
-            )}
-
-            {/* TAB TAHUNAN */}
-            {tab === 'tahunan' && (
-              <div className="space-y-6 animate-in fade-in duration-500">
-                <div className="flex flex-wrap md:flex-nowrap justify-between items-end bg-white p-5 rounded-3xl shadow-sm border border-gray-100 gap-4">
-                  <div className="flex flex-wrap gap-3 items-end w-full md:w-auto">
-                    <div className="flex-1 min-w-[120px]">
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Tahun</label>
-                      <select value={tahunTahunan} onChange={(e) => setTahunTahunan(parseInt(e.target.value))} className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm">
-                        {[...Array(5)].map((_, i) => <option key={i} value={new Date().getFullYear() - 2 + i}>{new Date().getFullYear() - 2 + i}</option>)}
-                      </select>
-                    </div>
-                    <button onClick={fetchLaporanTahunan} className="w-full sm:w-auto px-6 py-2.5 rounded-xl font-bold text-white transition-all shadow-md bg-gradient-to-r from-[#14532d] to-[#d4af37] text-sm h-[42px]">
-                      Analisa
-                    </button>
-                  </div>
-                </div>
-
-                {loading ? (
-                  <div className="flex items-center justify-center h-48"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#14532d]"></div></div>
-                ) : dataTahunan ? (
-                  <div className="space-y-8">
-                    {/* General Metrics Grid */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="bg-gradient-to-br from-[#14532d] to-[#d4af37] rounded-3xl p-6 text-white shadow-lg relative overflow-hidden group">
-                         <div className="absolute -right-6 -top-6 w-24 h-24 bg-white/10 rounded-full blur-xl group-hover:scale-150 transition-transform"></div>
-                         <p className="text-emerald-100 text-sm font-semibold mb-2 relative z-10">Total Penjualan</p>
-                         <p className="text-3xl font-black relative z-10">{fRp(dataTahunan.total_pendapatan)}</p>
-                      </div>
-                      <div className="bg-gradient-to-br from-emerald-600 to-teal-700 rounded-3xl p-6 text-white shadow-lg relative overflow-hidden group">
-                         <div className="absolute -right-6 -top-6 w-24 h-24 bg-white/10 rounded-full blur-xl group-hover:scale-150 transition-transform"></div>
-                         <p className="text-emerald-100 text-sm font-semibold mb-2 relative z-10">Gross Profit (Omset Murni)</p>
-                         <p className="text-2xl font-black relative z-10">{fRp(dataTahunan.gross_profit || 0)}</p>
-                      </div>
-                      <div className="bg-white rounded-3xl p-6 border border-gray-100 shadow-sm">
-                         <p className="text-gray-400 text-sm font-bold uppercase mb-2">Transaksi Selesai</p>
-                         <p className="text-2xl font-black text-[#14532d]">{dataTahunan.total_pesanan}</p>
-                      </div>
-                      <div className="bg-white rounded-3xl p-6 border border-gray-100 shadow-sm">
-                         <p className="text-gray-400 text-sm font-bold uppercase mb-2">Average Order Value</p>
-                         <p className="text-2xl font-black text-[#14532d]">{fRp(dataTahunan.aov)}</p>
-                      </div>
-                    </div>
-
-                    {/* Visual Sales Chart (Recharts - Tren Bulanan) */}
-                    <div className="bg-white rounded-3xl p-7 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-                      <h2 className="font-bold text-xl text-[#14532d] mb-6">📅 Tren Penjualan Bulanan ({tahunTahunan})</h2>
-                      <div className="h-[320px]">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <AreaChart 
-                            data={(dataTahunan?.bulanan || []).map(b => ({
-                              name: new Date(2024, b.bulan - 1).toLocaleDateString('id-ID', { month: 'short' }),
-                              'Omset': Number(b.pendapatan),
-                              'Pesanan': Number(b.total_pesanan)
-                            }))} 
-                            margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
-                          >
-                            <defs>
-                              <linearGradient id="colorTahunanOmset" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#d4af37" stopOpacity={0.3}/>
-                                <stop offset="95%" stopColor="#d4af37" stopOpacity={0.0}/>
-                              </linearGradient>
-                            </defs>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#f5f5f5" />
-                            <XAxis dataKey="name" stroke="#a0a0a0" fontSize={11} fontStyle="bold" />
-                            <YAxis stroke="#a0a0a0" fontSize={11} tickFormatter={(v) => `Rp ${v/1000}k`} />
-                            <Tooltip formatter={(value) => fRp(value)} />
-                            <Legend iconType="rect" />
-                            <Area type="monotone" dataKey="Omset" stroke="#d4af37" fillOpacity={1} fill="url(#colorTahunanOmset)" strokeWidth={3} />
-                          </AreaChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-
-                    {renderMenuDetailTable(dataTahunan.menu_detail, 'Y')}
-                  </div>
-                ) : null}
-              </div>
-            )}
-
-            {/* TAB HISTORI TRANSAKSI DENGAN FILTER CANGGIH */}
-            {tab === 'histori' && (
-              <div className="space-y-6 animate-in fade-in duration-500">
-                <div className="bg-white p-5 md:p-6 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-gray-100">
-                  <div className="flex items-center gap-2 mb-4 text-[#14532d] font-bold text-lg">
-                    <Filter size={20} /> Filter Database Transaksi
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
-                    <div className="lg:col-span-2">
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Pencarian Cerdas</label>
-                      <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                          <Search size={16} className="text-gray-400" />
-                        </div>
-                        <input type="text" placeholder="Cari ID Pesanan / Nama Kasir..." value={searchHistori} onChange={e => setSearchHistori(e.target.value)} className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm" onKeyDown={e => e.key === 'Enter' && fetchHistori(1)} />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Metode Bayar</label>
-                      <select value={filterMetode} onChange={e => setFilterMetode(e.target.value)} className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm">
-                        <option value="semua">Semua Metode</option>
-                        <option value="cash">Cash / Tunai</option>
-                        <option value="qris">QRIS</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Dari Tanggal</label>
-                      <input type="date" value={dariHistori} onChange={e => setDariHistori(e.target.value)} className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Sampai Tanggal</label>
-                      <input type="date" value={sampaiHistori} onChange={e => setSampaiHistori(e.target.value)} className="w-full px-4 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-medium text-gray-700 bg-gray-50 text-sm" />
-                    </div>
-                  </div>
-                  
-                  <div className="flex gap-3 mt-6 pt-5 border-t border-gray-100 justify-end">
-                    <button onClick={() => { setFilterMetode('semua'); setSearchHistori(''); setDariHistori(getLocalDateString()); setSampaiHistori(getLocalDateString()); }} className="px-6 py-2.5 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition-all text-sm">
-                      Reset
-                    </button>
-                    <button onClick={() => { setHalamanHistori(1); fetchHistori(1) }} className="px-8 py-2.5 rounded-xl font-bold text-white transition-all shadow-md bg-gradient-to-r from-[#14532d] to-[#d4af37] text-sm">
-                      Terapkan Filter
-                    </button>
-                    {!isInvestor && (
-                      <button onClick={handleExportHistori} className="px-6 py-2.5 rounded-xl font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 transition-all hover:bg-emerald-600 hover:text-white shadow-sm flex items-center justify-center gap-2 text-sm">
-                        <Download size={18} /> Export Data
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {loading ? (
-                  <div className="flex items-center justify-center h-48"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#14532d]"></div></div>
-                ) : dataHistori && dataHistori.data.length > 0 ? (
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                    {/* LEFT COLUMN: Summary & Chart */}
-                    <div className="lg:col-span-5 space-y-6">
-                      {/* Metrics Cards */}
-                      <div className="grid grid-cols-3 gap-2">
-                        <div className="bg-[#1E4D2B] text-white p-3 rounded-2xl text-center shadow-[0_4px_12px_rgba(30,77,43,0.15)] flex flex-col justify-center min-h-[90px]">
-                          <p className="text-[10px] text-emerald-200 font-bold uppercase tracking-wider mb-1">Jml Transaksi</p>
-                          <p className="text-lg font-black">{dataHistori.summary?.total_pesanan || 0}</p>
-                        </div>
-                        <div className="bg-[#1E4D2B] text-white p-3 rounded-2xl text-center shadow-[0_4px_12px_rgba(30,77,43,0.15)] flex flex-col justify-center min-h-[90px]">
-                          <p className="text-[10px] text-emerald-200 font-bold uppercase tracking-wider mb-1">Pendapatan</p>
-                          <p className="text-xs font-black truncate" title={fRp(dataHistori.summary?.total_pendapatan || 0)}>{fRp(dataHistori.summary?.total_pendapatan || 0)}</p>
-                        </div>
-                        <div className="bg-[#1E4D2B] text-white p-3 rounded-2xl text-center shadow-[0_4px_12px_rgba(30,77,43,0.15)] flex flex-col justify-center min-h-[90px]">
-                          <p className="text-[10px] text-emerald-200 font-bold uppercase tracking-wider mb-1">Keuntungan</p>
-                          <p className="text-xs font-black truncate" title={fRp(dataHistori.summary?.total_keuntungan || 0)}>{fRp(dataHistori.summary?.total_keuntungan || 0)}</p>
-                        </div>
-                      </div>
-
-                      {/* Chart Card */}
-                      <div className="bg-white p-4 rounded-3xl border border-gray-100 shadow-[0_8px_30px_rgb(0,0,0,0.02)]">
-                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-4">📈 Tren Pendapatan</p>
-                        <div className="h-[240px]">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart 
-                              data={(dataHistori.chart || []).map(c => ({
-                                name: new Date(c.tanggal).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' }),
-                                'Omset': Number(c.pendapatan)
-                              }))}
-                              margin={{ top: 10, right: 5, left: -20, bottom: 0 }}
-                            >
-                              <defs>
-                                <linearGradient id="colorHistoriOmset" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="5%" stopColor="#1E4D2B" stopOpacity={0.2}/>
-                                  <stop offset="95%" stopColor="#1E4D2B" stopOpacity={0.0}/>
-                                </linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#f5f5f5" />
-                              <XAxis dataKey="name" stroke="#a0a0a0" fontSize={9} fontStyle="bold" />
-                              <YAxis stroke="#a0a0a0" fontSize={9} tickFormatter={(v) => `Rp ${v/1000}k`} />
-                              <Tooltip formatter={(value) => fRp(value)} />
-                              <Area type="monotone" dataKey="Omset" stroke="#1E4D2B" fillOpacity={1} fill="url(#colorHistoriOmset)" strokeWidth={2} />
-                            </AreaChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* RIGHT COLUMN: Transactions List */}
-                    <div className="lg:col-span-7 space-y-4">
-                      <div className="bg-gray-50/50 p-2.5 rounded-2xl border border-gray-100 text-xs font-bold text-gray-500 uppercase tracking-wider flex justify-between px-4">
-                        <span>Daftar Transaksi</span>
-                        <span>{dataHistori.total || 0} Total</span>
-                      </div>
-
-                      <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
-                        {dataHistori.data.map((p) => {
-                          const tDate = new Date(p.created_at);
-                          const timeStr = tDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                          const dateStr = tDate.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
-                          const keuntungan = Math.max(0, Number(p.total) - Number(p.total_hpp));
-
-                          return (
-                            <div key={p.id} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-[0_4px_20px_rgba(0,0,0,0.02)] hover:border-gray-300 transition-all flex justify-between items-center relative group">
-                              
-                              {/* Left details */}
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs text-gray-400 font-medium">{timeStr}</span>
-                                  <span className="text-xs text-gray-500 font-bold">{dateStr}</span>
-                                </div>
-                                <p className="text-sm font-black text-[#14532d]">No : #{String(p.id).padStart(4, '0')} {p.local_id && <span className="text-xs text-emerald-500 ml-2 border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 rounded">(Offline: {p.local_id.substring(0, 8).toUpperCase()})</span>}</p>
-                                <div className="text-xs font-medium text-gray-600">
-                                  <span>Pelanggan : <span className="font-bold">{p.nama_pelanggan || 'Umum'}</span></span>
-                                  {p.nomor_meja && <span className="ml-2.5 bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded text-[10px] font-bold">Meja {p.nomor_meja}</span>}
-                                </div>
-                                <div className="flex flex-wrap gap-1 mt-1.5">
-                                  {(p.items || []).map((it, j) => (
-                                    <span key={j} className="text-[10px] bg-gray-50 text-gray-600 px-1.5 py-0.5 rounded border border-gray-100">
-                                      {it.qty}x {it.nama_menu}
-                                    </span>
-                                  ))}
-                                </div>
-                              </div>
-
-                              {/* Right values & actions */}
-                              <div className="flex items-center gap-4">
-                                <div className="text-right space-y-0.5">
-                                  <div className="text-[11px] text-gray-400 font-bold uppercase">Pendapatan</div>
-                                  <div className="text-sm font-black text-gray-800">{fRp(p.total)}</div>
-                                  <div className="text-[10px] text-emerald-600 font-bold uppercase mt-1">Keuntungan</div>
-                                  <div className="text-xs font-black text-emerald-600">{fRp(keuntungan)}</div>
-                                </div>
-
-                                <div className="flex flex-col gap-1.5 pl-2 border-l border-gray-100">
-                                  <button 
-                                    onClick={() => handlePrintReceipt(p)}
-                                    className="p-2 bg-emerald-50 hover:bg-emerald-600 text-emerald-600 hover:text-white rounded-xl transition-all border border-emerald-100"
-                                    title="Print Struk"
-                                  >
-                                    <Printer size={15} />
-                                  </button>
-                                  {userCanEdit('laporan') && (
-                                    <button 
-                                      onClick={() => handleDeletePesanan(p.id)}
-                                      className="p-2 bg-red-50 hover:bg-red-600 text-red-500 hover:text-white rounded-xl transition-all border border-red-100"
-                                      title="Hapus Transaksi"
-                                    >
-                                      <Trash2 size={15} />
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* Pagination */}
-                      <div className="flex justify-between items-center p-4 bg-gray-50/50 rounded-2xl border border-gray-100">
-                        <span className="text-xs font-bold text-gray-500">
-                          Hal <span className="text-[#14532d]">{dataHistori.page}</span> / {dataHistori.totalPages} 
-                          <span className="font-normal text-gray-400 ml-1.5">({dataHistori.total} tr)</span>
-                        </span>
-                        <div className="flex gap-1.5">
-                          <button disabled={dataHistori.page <= 1} onClick={() => fetchHistori(dataHistori.page - 1)} className="px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-gray-200 hover:bg-white bg-gray-100 text-gray-600">
-                            &larr; Prev
-                          </button>
-                          <button disabled={dataHistori.page >= dataHistori.totalPages} onClick={() => fetchHistori(dataHistori.page + 1)} className="px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-[#14532d] bg-[#14532d] text-white hover:opacity-90">
-                            Next &rarr;
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center p-12 bg-white rounded-3xl border border-gray-100 shadow-sm">
-                    <ReceiptText size={48} className="text-gray-300 mb-4" />
-                    <p className="font-bold text-gray-500">Tidak ada histori transaksi yang sesuai dengan filter</p>
-                  </div>
+            {data && (
+              <div className="flex items-center gap-3 mt-4 pt-4 border-t border-gray-50">
+                <p className="text-sm font-bold text-[#14532d]">{formatTanggal(tanggal)}</p>
+                {data._isDemo && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 text-[11px] font-bold">
+                    <Info size={10} className="inline mr-1" />Data Demo
+                  </span>
                 )}
               </div>
             )}
-            
-        </div>
-      </div>
+          </div>
 
-      {/* Edit Target Modal */}
-      {showEditTarget && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-xl">
-            <h3 className="font-bold text-lg text-[#14532d] mb-2">Edit Target KPI Bulanan</h3>
-            <p className="text-xs text-gray-500 mb-4">Ubah target pendapatan bulanan untuk mengukur capaian dan bonus karyawan.</p>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Target (Rp)</label>
-                <input 
-                  type="number" 
-                  value={tempTarget} 
-                  onChange={e => setTempTarget(Number(e.target.value))} 
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:border-[#14532d] font-bold text-lg text-gray-700 bg-gray-50"
-                  placeholder="Contoh: 50000000"
-                />
-                <p className="text-xs text-[#d4af37] font-medium mt-2">
-                  Format Rupiah: {new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(tempTarget)}
+          {/* Loading */}
+          {loading && (
+            <div className="flex items-center justify-center h-48">
+              <div className="flex flex-col items-center gap-3">
+                <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-[#14532d]" />
+                <p className="text-sm text-gray-400 font-medium">Memuat laporan...</p>
+              </div>
+            </div>
+          )}
+
+          {data && !loading && (
+            <>
+              {/* KPI Strip */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  { label: 'Net Sales',       value: fRp(data.netSales),       grad: 'from-[#14532d] to-[#d4af37]', txt: 'text-white', sub: 'text-white/70' },
+                  { label: 'Total Collected', value: fRp(data.totalCollected), grad: 'from-emerald-600 to-teal-600',  txt: 'text-white', sub: 'text-white/70' },
+                  { label: 'Transaksi',       value: data.total_pesanan.toLocaleString('id-ID') + ' trx', plain: true },
+                  { label: 'Avg Order Value', value: fRp(data.aov),             plain: true },
+                ].map((k, i) => (
+                  <div key={i} className={`rounded-2xl p-4 shadow-sm ${k.plain ? 'bg-white border border-gray-100' : ('bg-gradient-to-br ' + k.grad)}`}>
+                    <p className={`text-[11px] font-bold uppercase tracking-wider mb-1 ${k.plain ? 'text-gray-400' : k.sub}`}>{k.label}</p>
+                    <p className={`text-lg font-black leading-tight ${k.plain ? 'text-[#14532d]' : k.txt}`}>{k.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* ══ SECTION 1 – RINGKASAN PENJUALAN ══ */}
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                <h2 className="font-black text-lg text-[#14532d] mb-1 flex items-center gap-2">
+                  <span className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 text-xs font-black flex items-center justify-center border border-emerald-200">1</span>
+                  Ringkasan Penjualan
+                  <span className="text-sm font-normal text-gray-400 ml-1">Sales Summary</span>
+                </h2>
+                <p className="text-xs text-gray-400 font-medium mb-5 ml-9">Total penjualan kotor hingga total yang diterima</p>
+                <div className="divide-y divide-gray-50">
+                  <SummaryRow label="Gross Sales"                value={data.grossSales}  />
+                  <SummaryRow label="Discounts"                  value={data.discounts}   isNegative note={data._isDemo ? '' : '(dari API)'} />
+                  <SummaryRow label="Refunds"                    value={data.refunds}     isNegative note={data._isDemo ? '' : '(belum ada di API)'} />
+                  <SummaryRow label="Net Sales"                  value={data.netSales}    isHighlight />
+                  <SummaryRow label="Gratuity / Service Charge"  value={data.gratuity}    note={data._isDemo ? '' : '(belum ada di API)'} />
+                  <SummaryRow label="Tax (PPN 11%)"              value={data.tax}         note={data._isDemo ? '' : '(belum ada di API)'} />
+                  <SummaryRow label="Rounding"                   value={data.rounding}    isNegative={data.rounding < 0} note={data._isDemo ? '' : '(belum ada di API)'} />
+                </div>
+                <div className="mt-3">
+                  <SummaryRow label="Total Collected" value={data.totalCollected} isTotal />
+                </div>
+              </div>
+
+              {/* ══ SECTION 2 – PENJUALAN PER ITEM ══ */}
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+                  <div>
+                    <h2 className="font-black text-lg text-[#14532d] flex items-center gap-2">
+                      <span className="w-7 h-7 rounded-lg bg-purple-100 text-purple-700 text-xs font-black flex items-center justify-center border border-purple-200">2</span>
+                      Penjualan per Item
+                      <span className="text-sm font-normal text-gray-400 ml-1">Item Sales</span>
+                    </h2>
+                    <p className="text-xs text-gray-400 font-medium mt-1 ml-9">{sortedItems.length} menu · diurutkan dari tertinggi</p>
+                  </div>
+                  <div className="flex items-center bg-gray-100 rounded-xl p-1 gap-1">
+                    <button onClick={() => setItemMode('income')}
+                      className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${itemMode === 'income' ? 'bg-white text-[#14532d] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                      Nominal (Rp)
+                    </button>
+                    <button onClick={() => setItemMode('qty')}
+                      className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${itemMode === 'qty' ? 'bg-white text-[#14532d] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                      Kuantitas (Qty)
+                    </button>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#14532d] text-white text-xs">
+                        <th className="px-4 py-3 rounded-tl-xl font-semibold uppercase tracking-wider">Nama Item</th>
+                        <th className="px-4 py-3 font-semibold uppercase tracking-wider">SKU</th>
+                        <th className="px-4 py-3 font-semibold uppercase tracking-wider">Kategori</th>
+                        <th className="px-4 py-3 rounded-tr-xl font-semibold uppercase tracking-wider text-right">
+                          {itemMode === 'income' ? 'Penjualan (Rp)' : 'Qty Terjual'}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedItems.map((m, i) => (
+                        <tr key={i} className="border-b border-gray-50 hover:bg-emerald-50/30 transition-colors">
+                          <td className="px-4 py-3.5 text-sm font-semibold text-gray-800">{m.nama}</td>
+                          <td className="px-4 py-3.5 text-xs font-mono text-gray-400">{m.sku || '-'}</td>
+                          <td className="px-4 py-3.5">
+                            <CatChip kategori={m.kategori}
+                              warna={m.kategori === 'Makanan' ? 'amber' : m.kategori === 'Minuman' ? 'blue' : m.kategori === 'Merchandise' ? 'purple' : 'gray'} />
+                          </td>
+                          <td className="px-4 py-3.5 text-right text-sm font-bold text-emerald-700 tabular-nums">
+                            {itemMode === 'income' ? fRp(m.total_pendapatan) : Number(m.total_terjual).toLocaleString('id-ID')}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-emerald-50 border-t-2 border-emerald-200">
+                        <td colSpan={3} className="px-4 py-4 text-sm font-black text-emerald-900 text-right">Total Keseluruhan</td>
+                        <td className="px-4 py-4 text-right text-sm font-black text-emerald-700 tabular-nums">
+                          {itemMode === 'income' ? fRp(totalItemIncome) : totalItemQty.toLocaleString('id-ID')}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+
+              {/* ══ SECTION 3 – METODE PEMBAYARAN ══ */}
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                <h2 className="font-black text-lg text-[#14532d] mb-1 flex items-center gap-2">
+                  <span className="w-7 h-7 rounded-lg bg-teal-100 text-teal-700 text-xs font-black flex items-center justify-center border border-teal-200">3</span>
+                  Metode Pembayaran
+                  <span className="text-sm font-normal text-gray-400 ml-1">Payment Methods</span>
+                </h2>
+                <p className="text-xs text-gray-400 font-medium mb-5 ml-9">Dikelompokkan per tipe pembayaran</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#14532d] text-white text-xs">
+                        <th className="px-4 py-3 rounded-tl-xl font-semibold uppercase tracking-wider">Metode Pembayaran</th>
+                        <th className="px-4 py-3 font-semibold uppercase tracking-wider text-right">Jumlah Transaksi</th>
+                        <th className="px-4 py-3 rounded-tr-xl font-semibold uppercase tracking-wider text-right">Total Diterima</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paymentGroups.map((g, gi) => (
+                        <React.Fragment key={gi}>
+                          <tr className="bg-emerald-50/60 border-l-[3px] border-[#14532d]">
+                            <td colSpan={3} className="px-4 py-2.5 text-xs font-black text-[#14532d] uppercase tracking-wider">
+                              {g.grup === 'Digital' ? '📱' : g.grup === 'Tunai' ? '💵' : '💳'} {g.grup} Payments
+                            </td>
+                          </tr>
+                          {g.methods.map((m, mi) => (
+                            <tr key={mi} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                              <td className="px-4 py-3.5 pl-8 text-sm text-gray-700 font-medium">↳ {m.metode}</td>
+                              <td className="px-4 py-3.5 text-right text-sm font-semibold text-gray-600 tabular-nums">
+                                {Number(m.jumlah_transaksi).toLocaleString('id-ID')} trx
+                              </td>
+                              <td className="px-4 py-3.5 text-right text-sm font-bold text-emerald-700 tabular-nums">{fRp(m.total)}</td>
+                            </tr>
+                          ))}
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-emerald-50 border-t-2 border-emerald-200">
+                        <td className="px-4 py-4 text-sm font-black text-emerald-900">Total Keseluruhan</td>
+                        <td className="px-4 py-4 text-right text-sm font-black text-emerald-700 tabular-nums">{grandTrxTotal.toLocaleString('id-ID')} trx</td>
+                        <td className="px-4 py-4 text-right text-sm font-black text-emerald-700 tabular-nums">{fRp(grandAmountTotal)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+
+              {/* ══ SECTION 4 – PENJUALAN PER KATEGORI ══ */}
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
+                <h2 className="font-black text-lg text-[#14532d] mb-1 flex items-center gap-2">
+                  <span className="w-7 h-7 rounded-lg bg-amber-100 text-amber-700 text-xs font-black flex items-center justify-center border border-amber-200">4</span>
+                  Penjualan per Kategori
+                  <span className="text-sm font-normal text-gray-400 ml-1">Category Sales</span>
+                </h2>
+                <p className="text-xs text-gray-400 font-medium mb-5 ml-9">Jumlah item terjual dan refund per kategori menu</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-[#14532d] text-white text-xs">
+                        <th className="px-4 py-3 rounded-tl-xl font-semibold uppercase tracking-wider">Kategori</th>
+                        <th className="px-4 py-3 font-semibold uppercase tracking-wider text-right">Items Terjual</th>
+                        <th className="px-4 py-3 font-semibold uppercase tracking-wider text-right">Items Refund</th>
+                        <th className="px-4 py-3 font-semibold uppercase tracking-wider text-right">Net Terjual</th>
+                        <th className="px-4 py-3 rounded-tr-xl font-semibold uppercase tracking-wider text-right">Gross Sales</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(data.category_sales || []).map((c, i) => (
+                        <tr key={i} className="border-b border-gray-50 hover:bg-amber-50/30 transition-colors">
+                          <td className="px-4 py-3.5"><CatChip kategori={c.kategori} warna={c.warna} /></td>
+                          <td className="px-4 py-3.5 text-right text-sm font-semibold text-gray-700 tabular-nums">{c.items_sold.toLocaleString('id-ID')}</td>
+                          <td className="px-4 py-3.5 text-right text-sm font-semibold text-red-400 tabular-nums">
+                            {c.items_refunded > 0 ? ('– ' + c.items_refunded.toLocaleString('id-ID')) : '—'}
+                          </td>
+                          <td className="px-4 py-3.5 text-right text-sm font-bold text-gray-800 tabular-nums">{(c.items_sold - c.items_refunded).toLocaleString('id-ID')}</td>
+                          <td className="px-4 py-3.5 text-right text-sm font-bold text-emerald-700 tabular-nums">{fRp(catIncome[c.kategori] || 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-emerald-50 border-t-2 border-emerald-200">
+                        <td className="px-4 py-4 text-sm font-black text-emerald-900">Total</td>
+                        <td className="px-4 py-4 text-right text-sm font-black text-emerald-700 tabular-nums">{totalCatSold.toLocaleString('id-ID')}</td>
+                        <td className="px-4 py-4 text-right text-sm font-black text-red-400 tabular-nums">
+                          {totalCatRef > 0 ? ('– ' + totalCatRef.toLocaleString('id-ID')) : '—'}
+                        </td>
+                        <td className="px-4 py-4 text-right text-sm font-black text-emerald-700 tabular-nums">{(totalCatSold - totalCatRef).toLocaleString('id-ID')}</td>
+                        <td className="px-4 py-4 text-right text-sm font-black text-emerald-700 tabular-nums">
+                          {fRp(Object.values(catIncome).reduce((a, b) => a + b, 0))}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+                <div className="mt-4 flex items-start gap-2 p-3 bg-amber-50/70 border border-amber-200/60 rounded-xl">
+                  <Info size={14} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-amber-700 font-medium leading-relaxed">
+                    <span className="font-bold">Catatan:</span> Gross Profit per kategori memerlukan data COGS (Harga Pokok Penjualan) per item.
+                    Tambahkan field <code className="bg-amber-100 px-1 rounded text-[11px]">hpp</code> pada setiap menu di Manajemen Menu agar bisa dihitung otomatis.
+                  </p>
+                </div>
+              </div>
+
+              <div className="text-center py-4">
+                <p className="text-xs text-gray-400">
+                  © {new Date().getFullYear()} New Chapter · Laporan Kasir Harian
+                   ·  {data._isDemo ? '⚠️ Data Demo (API tidak tersedia)' : '✅ Data Live dari Server'}
                 </p>
               </div>
-
-              <div className="flex gap-3 pt-2">
-                <button 
-                  onClick={() => setShowEditTarget(false)} 
-                  className="flex-1 py-3 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition-all text-sm"
-                >
-                  Batal
-                </button>
-                <button 
-                  onClick={handleSaveTarget} 
-                  className="flex-1 py-3 rounded-xl font-bold text-white bg-gradient-to-r from-[#14532d] to-[#d4af37] hover:opacity-90 transition-all shadow-md text-sm"
-                >
-                  Simpan
-                </button>
-              </div>
-            </div>
-          </div>
+            </>
+          )}
         </div>
-      )}
-      {/* Modal Cetak Ulang */}
-      {printTarget && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-xl">
-            <h3 className="font-bold text-lg text-[#14532d] mb-2">Pilih Struk</h3>
-            <p className="text-xs text-gray-500 mb-4">Pilih struk untuk dicetak ulang (Order #{String(printTarget.id).padStart(4, '0')}).</p>
-            
-            <div className="space-y-3 mb-6">
-              {['kasir', 'pelanggan', 'dapur', 'bar'].map(opt => (
-                <label key={opt} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={printOptions[opt]}
-                    onChange={(e) => setPrintOptions(prev => ({ ...prev, [opt]: e.target.checked }))}
-                    className="w-5 h-5 rounded text-[#14532d] focus:ring-[#14532d]"
-                  />
-                  <span className="text-sm font-bold text-gray-700 capitalize">Struk {opt}</span>
-                </label>
-              ))}
-            </div>
-
-            <div className="flex gap-3">
-              <button 
-                onClick={() => setPrintTarget(null)} 
-                className="flex-1 py-3 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition-all text-sm"
-              >
-                Batal
-              </button>
-              <button 
-                onClick={executePrint} 
-                className="flex-1 py-3 rounded-xl font-bold text-white bg-gradient-to-r from-[#14532d] to-[#d4af37] hover:opacity-90 transition-all shadow-md text-sm"
-              >
-                Cetak
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
+      </div>
     </MobileLayout>
   )
 }
