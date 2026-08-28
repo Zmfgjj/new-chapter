@@ -1,0 +1,141 @@
+import { useState } from 'react'
+import { useAuth } from '../hooks/useAuth'
+import { useNavigate } from 'react-router-dom'
+import { LayoutDashboard, ReceiptText, ShoppingCart, Grid2X2, MonitorPlay, BarChart3, Users, LogOut, Menu, X, Shield, Tag, MessageCircle, Activity } from 'lucide-react'
+import { CURRENT_APP_VERSION } from './UpdateChecker'
+
+export const allMenuItems = [
+  { label: 'Dashboard', path: '/kasir', module: 'dashboard' },
+  { label: 'Kasir (POS)', path: '/kasir/pos', module: 'pos' },
+  { label: 'Manajemen Menu', path: '/kasir/menu', module: 'manajemen_menu' },
+  { label: 'Manajemen Promo', path: '/kasir/promo', module: 'manajemen_promo' },
+  { label: 'KDS', path: '/kasir/kds', module: 'kds' },
+  { label: 'Laporan', path: '/kasir/laporan', module: 'laporan' },
+  { label: 'CRM', path: '/kasir/crm', module: 'crm' },
+  { label: 'User Manage', path: '/kasir/user-manage', module: 'user_manage' },
+  { label: 'Role Manage', path: '/kasir/role', module: 'role' },
+  { label: 'Import Data', path: '/kasir/import', module: 'import' },
+  { label: 'Monitoring', path: '/kasir/monitoring', module: 'logs_monitoring' },
+]
+
+export default function MobileLayout({ activeMenu, children, overflowClass = 'overflow-y-auto' }) {
+  const { user, logout, canView, isInvestor } = useAuth()
+  const navigate = useNavigate()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const handleLogout = () => { logout(); navigate('/login') }
+
+  // Filter menu items based on dynamic permissions
+  const menuItems = allMenuItems.filter(item => {
+    if (item.ownerOnly) return user?.role === 'owner';
+    return canView(item.module);
+  })
+
+  return (
+    <div className="flex h-full font-sans overflow-hidden" style={{ backgroundColor: '#f0fdf4' }}>
+
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar - desktop: static, mobile: slide-in drawer */}
+      <div
+        className={`
+          fixed inset-y-0 left-0 z-50 lg:sticky lg:top-0 h-screen overflow-y-auto scrollbar-hide
+          w-64 flex flex-col items-center py-8 px-4 shadow-xl
+          transition-transform duration-300 ease-in-out
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+        `}
+        style={{ backgroundColor: '#dcfce7' }}
+      >
+        {/* Close button - mobile only */}
+        <button
+          onClick={() => setSidebarOpen(false)}
+          className="lg:hidden absolute top-4 right-4 w-8 h-8 rounded-full bg-[#14532d]/10 text-[#14532d] flex items-center justify-center"
+        >
+          <X size={18} />
+        </button>
+
+        {/* Logo */}
+        <div className="mb-8 relative group cursor-pointer">
+          <div className="absolute inset-0 bg-yellow-500 rounded-full blur-md opacity-20 group-hover:opacity-40 transition duration-300"></div>
+          <div className="w-28 h-28 rounded-full border-4 relative flex items-center justify-center bg-black overflow-hidden" style={{ borderColor: '#d4af37' }}>
+            <img src="/logo.jpeg" alt="Logo" className="w-full h-full object-cover transform group-hover:scale-110 transition duration-500" />
+          </div>
+        </div>
+
+        {/* Nav items */}
+        <nav className="w-full space-y-2 flex-1 mt-4">
+          {menuItems.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => {
+                if (item.path) navigate(item.path)
+                setSidebarOpen(false)
+              }}
+              className="w-full flex items-center gap-3 px-5 py-3.5 rounded-xl text-left transition-all font-semibold text-sm group"
+              style={{
+                backgroundColor: activeMenu === item.label ? '#14532d' : 'transparent',
+                color: activeMenu === item.label ? '#fff' : '#14532d',
+                boxShadow: activeMenu === item.label ? '0 4px 14px 0 rgba(20, 83, 45, 0.39)' : 'none'
+              }}
+            >
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+
+        {/* Logout */}
+        <button
+          onClick={handleLogout}
+          className="w-full mt-4 py-3.5 rounded-xl font-bold text-sm transition-all hover:bg-red-50 hover:text-red-600 hover:border-red-600"
+          style={{ color: '#14532d', border: '2px solid #14532d' }}
+        >
+          <LogOut size={20} className="inline mr-2" /> Logout
+        </button>
+
+        {/* Version Info */}
+        <div className="mt-4 text-center text-[10px] font-bold" style={{ color: '#16a34a' }}>
+          Versi: {CURRENT_APP_VERSION}
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col h-full min-w-0">
+
+        {/* Mobile top bar - only shows on mobile */}
+        <div className="lg:hidden flex items-center justify-between px-4 py-3 bg-[#dcfce7] shadow-sm z-30 shrink-0">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="w-10 h-10 rounded-xl bg-[#14532d]/10 text-[#14532d] flex items-center justify-center"
+          >
+            <Menu size={22} />
+          </button>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full border-2 bg-black overflow-hidden" style={{ borderColor: '#d4af37' }}>
+              <img src="/logo.jpeg" alt="Logo" className="w-full h-full object-cover" />
+            </div>
+            <span className="font-bold text-sm" style={{ color: '#14532d' }}>New Chapter</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="text-right hidden sm:block">
+              <p className="text-xs font-bold" style={{ color: '#14532d' }}>{user?.username}</p>
+              <p className="text-[10px] uppercase" style={{ color: '#16a34a' }}>{user?.role}</p>
+            </div>
+            <div className="w-9 h-9 rounded-full shadow-sm flex items-center justify-center text-white font-bold text-sm bg-gradient-to-br from-[#14532d] to-[#16a34a]">
+              {(user?.username || 'K')[0].toUpperCase()}
+            </div>
+          </div>
+        </div>
+
+        <div className={`flex-1 relative ${overflowClass}`}>
+          {children}
+        </div>
+      </div>
+    </div>
+  )
+}

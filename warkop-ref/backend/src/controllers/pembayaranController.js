@@ -1,0 +1,151 @@
+const db = require('../config/database');
+
+async function processMemberPoints(conn, pesanan_id, jumlahBayar) {
+  const [pesanan] = await conn.query('SELECT member_id, point_used, point_earned FROM pesanan WHERE id = ?', [pesanan_id]);
+  if (pesanan.length > 0 && pesanan[0].member_id) {
+    const p = pesanan[0];
+    // Check if points already processed for this pesanan
+    if (p.point_earned > 0) return; // Prevent double point processing
+
+    const pointsEarned = Math.floor(jumlahBayar / 100);
+    
+    // Deduct redeemed points
+    if (p.point_used > 0) {
+      await conn.query('UPDATE members SET point = point - ? WHERE id = ?', [p.point_used, p.member_id]);
+      await conn.query('INSERT INTO member_points_history (member_id, pesanan_id, tipe, jumlah_poin) VALUES (?, ?, "redeem", ?)', [p.member_id, pesanan_id, p.point_used]);
+    }
+    
+    // Add earned points
+    if (pointsEarned > 0) {
+      await conn.query('UPDATE members SET point = point + ? WHERE id = ?', [pointsEarned, p.member_id]);
+      await conn.query('INSERT INTO member_points_history (member_id, pesanan_id, tipe, jumlah_poin) VALUES (?, ?, "earn", ?)', [p.member_id, pesanan_id, pointsEarned]);
+      
+      // Update pesanan to prevent duplicate earned points
+      await conn.query('UPDATE pesanan SET point_earned = ? WHERE id = ?', [pointsEarned, pesanan_id]);
+    }
+  }
+}
+
+exports.buatPembayaran = async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const { pesanan_id, metode, is_kasir } = req.body;
+
+    // Cek pesanan
+    const [pesanan] = await conn.query(
+      'SELECT * FROM pesanan WHERE id = ? AND status != "batal" FOR UPDATE',
+      [pesanan_id]
+    );
+
+    if (pesanan.length === 0) {
+      return res.status(404).json({ message: 'Pesanan tidak ditemukan' });
+    }
+
+    // Cek sudah dibayar belum
+    const [existing] = await conn.query(
+      'SELECT * FROM pembayaran WHERE pesanan_id = ? AND status = "sukses"',
+      [pesanan_id]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({ message: 'Pesanan sudah dibayar' });
+    }
+
+    const totalTagihan = pesanan[0].total;
+    const dpAmount = parseFloat(pesanan[0].dp_amount || 0);
+    const jumlahBayar = Math.max(0, totalTagihan - dpAmount);
+
+    const isInstantSuccess = (metode === 'cash' || metode === 'tunai' || is_kasir);
+
+    // Insert pembayaran
+    const [result] = await conn.query(
+      'INSERT INTO pembayaran (pesanan_id, metode, jumlah, status) VALUES (?, ?, ?, ?)',
+      [pesanan_id, metode, jumlahBayar, isInstantSuccess ? 'sukses' : 'pending']
+    );
+
+    // Close open bill if cash/tunai (or wait for QRIS)
+    if (isInstantSuccess) {
+      await conn.query('UPDATE pesanan SET is_open_bill = 0, payment_status = "paid" WHERE id = ?', [pesanan_id]);
+      await processMemberPoints(conn, pesanan_id, jumlahBayar);
+    }
+
+    // Pesanan tetap pending, biarkan KDS yang handle status pesanan
+    // Meja tetap terisi sampai KDS menyelesaikan pesanan
+
+    await conn.commit();
+
+    // Emit socket
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('pembayaran', { pesanan_id, metode, status: isInstantSuccess ? 'sukses' : 'pending' });
+    }
+
+    res.status(201).json({
+      message: isInstantSuccess ? 'Pembayaran berhasil' : 'Menunggu pembayaran QRIS',
+      pembayaran_id: result.insertId,
+      jumlah: jumlahBayar,
+      metode
+    });
+
+  } catch (err) {
+    await conn.rollback();
+    console.error(err); res.status(500).json({ message: 'Server error' });
+  } finally {
+    conn.release();
+  }
+};
+
+exports.getPembayaran = async (req, res) => {
+  try {
+    const [rows] = await db.query(`
+      SELECT pb.*, p.total, p.tipe, m.nomor as nomor_meja
+      FROM pembayaran pb
+      LEFT JOIN pesanan p ON pb.pesanan_id = p.id
+      LEFT JOIN meja m ON p.meja_id = m.id
+      ORDER BY pb.created_at DESC
+      LIMIT 50
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error(err); res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.konfirmasiQris = async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const { id } = req.params;
+
+    const [pembayaran] = await conn.query(
+      'SELECT * FROM pembayaran WHERE id = ? AND metode = "qris"',
+      [id]
+    );
+
+    if (pembayaran.length === 0) {
+      return res.status(404).json({ message: 'Pembayaran tidak ditemukan' });
+    }
+
+    await conn.query('UPDATE pembayaran SET status = "sukses" WHERE id = ?', [id]);
+    await conn.query('UPDATE pesanan SET is_open_bill = 0, payment_status = "paid" WHERE id = ?', [pembayaran[0].pesanan_id]);
+    await processMemberPoints(conn, pembayaran[0].pesanan_id, pembayaran[0].jumlah);
+    // Pesanan tetap pending/diproses, biarkan KDS yang handle
+
+    await conn.commit();
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('qris_sukses', { pembayaran_id: id, pesanan_id: pembayaran[0].pesanan_id });
+    }
+
+    res.json({ message: 'Pembayaran QRIS dikonfirmasi' });
+  } catch (err) {
+    await conn.rollback();
+    console.error(err); res.status(500).json({ message: 'Server error' });
+  } finally {
+    conn.release();
+  }
+};

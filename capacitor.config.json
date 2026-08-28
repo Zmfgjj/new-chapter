@@ -1,0 +1,17 @@
+{
+  "appId": "com.newchapter.pos",
+  "appName": "New Chapter POS",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

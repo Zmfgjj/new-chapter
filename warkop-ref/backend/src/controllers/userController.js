@@ -1,0 +1,175 @@
+const db = require('../config/database');
+const bcrypt = require('bcryptjs');
+
+exports.getUsers = async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT id, nama, username, role, aktif, created_at, is_logged_in FROM users ORDER BY created_at DESC'
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err); res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.tambahUser = async (req, res) => {
+  try {
+    const { nama, username, password, role } = req.body;
+
+    if (!nama || !username || !password || !role) {
+      return res.status(400).json({ message: 'Semua field wajib diisi' });
+    }
+
+    // Validate role exists in roles table
+    const [roleRows] = await db.query('SELECT id FROM roles WHERE name = ?', [role.toLowerCase().trim()]);
+    if (roleRows.length === 0) {
+      return res.status(400).json({ message: 'Role tidak valid' });
+    }
+
+    // Cek username sudah ada
+    const [existing] = await db.query('SELECT id FROM users WHERE username = ?', [username]);
+    if (existing.length > 0) {
+      return res.status(400).json({ message: 'Username sudah dipakai' });
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    const [result] = await db.query(
+      'INSERT INTO users (nama, username, password, role) VALUES (?, ?, ?, ?)',
+      [nama, username, hashed, role]
+    );
+
+    res.status(201).json({ message: 'User ditambahkan', id: result.insertId });
+  } catch (err) {
+    console.error(err); res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.updateUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nama, username, password, role, aktif } = req.body;
+
+    if (!nama || !username || !role) {
+      return res.status(400).json({ message: 'Nama, username, dan role wajib diisi' });
+    }
+
+    if (role.toLowerCase() === 'owner' && req.user.role !== 'owner') {
+      return res.status(403).json({ message: 'Anda tidak bisa memberikan akses Owner' });
+    }
+
+    // Cegah admin mengedit owner
+    const [targetUserRows] = await db.query('SELECT role FROM users WHERE id = ?', [id]);
+    if (targetUserRows.length > 0 && targetUserRows[0].role === 'owner' && req.user.role !== 'owner') {
+      return res.status(403).json({ message: 'Anda tidak memiliki hak untuk mengubah Owner' });
+    }
+
+    // Validate role exists in roles table
+    const [roleRows] = await db.query('SELECT id FROM roles WHERE name = ?', [role.toLowerCase().trim()]);
+    if (roleRows.length === 0) {
+      return res.status(400).json({ message: 'Role tidak valid' });
+    }
+
+    if (password && password.length < 6) {
+      return res.status(400).json({ message: 'Password minimal 6 karakter' });
+    }
+
+    // Cek username sudah dipakai user lain
+    const [existing] = await db.query(
+      'SELECT id FROM users WHERE username = ? AND id != ?',
+      [username, id]
+    );
+    if (existing.length > 0) {
+      return res.status(400).json({ message: 'Username sudah dipakai' });
+    }
+
+    if (password) {
+      const hashed = await bcrypt.hash(password, 10);
+      await db.query(
+        'UPDATE users SET nama=?, username=?, password=?, role=?, aktif=? WHERE id=?',
+        [nama, username, hashed, role, aktif, id]
+      );
+    } else {
+      await db.query(
+        'UPDATE users SET nama=?, username=?, role=?, aktif=? WHERE id=?',
+        [nama, username, role, aktif, id]
+      );
+    }
+
+    res.json({ message: 'User diupdate' });
+  } catch (err) {
+    console.error(err); res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.hapusUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = parseInt(id);
+
+    if (!userId || isNaN(userId) || userId <= 0) {
+      return res.status(400).json({ message: 'ID user tidak valid' });
+    }
+
+    // Jangan hapus diri sendiri
+    if (userId === req.user.id) {
+      return res.status(400).json({ message: 'Tidak bisa hapus akun sendiri' });
+    }
+
+    // Cegah hapus owner
+    const [targetUserRows] = await db.query('SELECT role FROM users WHERE id = ?', [userId]);
+    if (targetUserRows.length > 0 && targetUserRows[0].role === 'owner' && req.user.role !== 'owner') {
+      return res.status(403).json({ message: 'Anda tidak memiliki hak untuk menghapus Owner' });
+    }
+
+    await db.query('DELETE FROM users WHERE id = ?', [userId]);
+    res.json({ message: 'User dihapus' });
+  } catch (err) {
+    console.error(err);
+    if (err.code === 'ER_ROW_IS_REFERENCED_2') {
+      return res.status(400).json({ message: 'Gagal dihapus: User ini memiliki riwayat pesanan/log. Silakan nonaktifkan (ubah status aktif) user ini.' });
+    }
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.gantiPassword = async (req, res) => {
+  try {
+    const { password_lama, password_baru } = req.body;
+    const id = req.user.id;
+
+    if (!password_lama || !password_baru) {
+      return res.status(400).json({ message: 'Password lama dan baru wajib diisi' });
+    }
+
+    if (password_baru.length < 6) {
+      return res.status(400).json({ message: 'Password baru minimal 6 karakter' });
+    }
+
+    const [rows] = await db.query('SELECT password FROM users WHERE id = ?', [id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'User tidak ditemukan' });
+    }
+    const valid = await bcrypt.compare(password_lama, rows[0].password);
+
+    if (!valid) {
+      return res.status(400).json({ message: 'Password lama salah' });
+    }
+
+    const hashed = await bcrypt.hash(password_baru, 10);
+    await db.query('UPDATE users SET password = ? WHERE id = ?', [hashed, id]);
+
+    res.json({ message: 'Password berhasil diganti' });
+  } catch (err) {
+    console.error(err); res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.resetSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.query('UPDATE users SET is_logged_in = 0 WHERE id = ?', [id]);
+    res.json({ message: 'Sesi akun berhasil direset. Akun kini bisa login kembali.' });
+  } catch (err) {
+    console.error(err); res.status(500).json({ message: 'Server error saat mereset sesi' });
+  }
+};
