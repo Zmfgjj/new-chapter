@@ -260,19 +260,40 @@ export default function Laporan() {
         const result = await Filesystem.writeFile({ path, data: base64, directory: Directory.Cache })
         await Share.share({ title: path, url: result.uri, dialogTitle: 'Simpan / Bagikan Laporan' })
       } else {
-        // Manual Blob download – lebih reliable dari XLSX.writeFile di semua browser
+        const fileName = 'Laporan-Kasir-' + d.tanggal + '.xlsx'
         const wbArray = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
         const blob = new Blob([wbArray], {
           type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         })
+
+        if (window.showSaveFilePicker) {
+          try {
+            const handle = await window.showSaveFilePicker({
+              suggestedName: fileName,
+              types: [{
+                description: 'Excel File',
+                accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] }
+              }]
+            })
+            const writable = await handle.createWritable()
+            await writable.write(blob)
+            await writable.close()
+            return
+          } catch (e) {
+            if (e.name === 'AbortError') return // User cancelled
+            console.error(e)
+          }
+        }
+
+        // Fallback
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
-        a.download = 'Laporan-Kasir-' + d.tanggal + '.xlsx'
+        a.download = fileName
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
-        URL.revokeObjectURL(url)
+        setTimeout(() => URL.revokeObjectURL(url), 100)
       }
     } catch (err) { showAlert('Gagal export: ' + err.message, 'Error', 'error') }
   }
